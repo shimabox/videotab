@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }} - videotab</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #ffffff;
+    color: #1a1a1a;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans",
+      "Yu Gothic", Arial, sans-serif;
+  }
+  header.tm-header {
+    padding: 16px 24px;
+    border-bottom: 1px solid #ddd;
+  }
+  h1.tm-title {
+    margin: 0 0 8px;
+    font-size: 1.4rem;
+    font-weight: 600;
+  }
+  .tm-meta {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 20px;
+    color: #444;
+    font-size: 0.9rem;
+  }
+  /* The player controls stay at the bottom of the window, so the score can
+     scroll (by hand or following playback) without taking them away. */
+  .tm-controls {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 10px 14px;
+    flex-wrap: wrap;
+    padding: 10px 24px calc(10px + env(safe-area-inset-bottom, 0px));
+    background: rgba(255, 255, 255, 0.96);
+    border-top: 1px solid #ddd;
+    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.06);
+  }
+  .tm-controls[hidden] { display: none; }
+  .tm-follow {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+    color: #333;
+    cursor: pointer;
+  }
+  .tm-keys {
+    color: #888;
+    font-size: 0.78rem;
+  }
+  .tm-download {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    font-size: 0.85rem;
+    color: #333;
+  }
+  .tm-download button.tm-btn { padding: 4px 10px; font-size: 0.82rem; }
+  button.tm-btn {
+    font: inherit;
+    font-size: 0.9rem;
+    padding: 6px 16px;
+    border: 1px solid #999;
+    background: #f5f5f5;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  button.tm-btn:hover:not(:disabled) { background: #e8e8e8; }
+  button.tm-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .tm-player-status {
+    color: #666;
+    font-size: 0.85rem;
+  }
+  .tm-offline-note {
+    margin-top: 8px;
+    color: #888;
+    font-size: 0.78rem;
+  }
+  .tm-source {
+    margin: 8px 0 0;
+    color: #444;
+    font-size: 0.85rem;
+  }
+  .tm-source a { color: #2463c7; }
+  #tm-alphatab-surface {
+    padding: 8px 24px 48px;
+    overflow-x: auto;
+  }
+  /* room for the fixed controls below the last line of the score; the
+     script sets it to the controls' height (they wrap on narrow windows) */
+  footer.tm-footer { margin-bottom: var(--tm-controls-room, 72px); }
+  /* alphaTab renders a white music sheet by design (AlphaTab.Core resources
+     default to black-on-white); we just make sure our own chrome matches so
+     there is no dark/light seam around it. */
+  footer.tm-footer {
+    padding: 8px 24px 28px;
+    color: #999;
+    font-size: 0.75rem;
+  }
+  footer.tm-footer a { color: #777; }
+  .tm-disclaimer { margin: 0 0 6px; color: #777; line-height: 1.6; }
+
+  /* Playback: alphaTab moves these cursors and tags the sounding notes with
+     .at-highlight, but draws nothing itself -- without these rules the
+     cursor is transparent and the notes keep their colour. Screen only, so
+     a page printed mid-playback keeps the plain score. */
+  @media screen {
+    .at-cursor-bar { background: rgba(255, 214, 0, 0.18); }
+    .at-cursor-beat { background: rgba(0, 102, 255, 0.75); width: 3px; }
+    .at-highlight * { fill: #e8590c; stroke: #e8590c; }
+  }
+
+  @media print {
+    .tm-controls,
+    .tm-player-status,
+    .tm-offline-note {
+      display: none !important;
+    }
+    /* 印刷（PDF）にも免責の段落は残し、生成日時などは出さない */
+    footer.tm-footer { font-size: 0; color: transparent; }
+    footer.tm-footer a { display: none; }
+    footer.tm-footer .tm-disclaimer { font-size: 9pt; color: #555; }
+    header.tm-header { border-bottom: none; }
+    footer.tm-footer { margin-bottom: 0; }
+    #tm-alphatab-surface { padding: 0; overflow: visible; }
+  }
+</style>
+</head>
+<body>
+<header class="tm-header">
+  <h1 class="tm-title">{{ title }}</h1>
+  <ul class="tm-meta">
+    <li>Tempo: {{ tempo }} BPM</li>
+    <li>Tuning: {{ tuning_label }}</li>
+    <li>Capo: {{ capo }}</li>
+    <li>小節数: {{ bar_count }}</li>
+  </ul>{% if source_url or source_creator %}
+  <p class="tm-source">元動画: {% if source_url %}<a href="{{ source_url }}" target="_blank" rel="noopener noreferrer">{{ source_title or source_url }}</a>{% else %}{{ source_title or "" }}{% endif %}{% if source_creator %}（作成: {{ source_creator }}）{% endif %}<br>画面のタブ譜から書き起こし</p>{% endif %}
+  <p class="tm-offline-note">
+    表示のみであればオフラインでも利用できます。再生機能は音源データ (soundfont)
+    を外部から読み込むため、オンライン時のみ利用できます。
+  </p>
+</header>
+
+<div id="tm-alphatab-surface"></div>
+
+<div class="tm-controls" id="tm-controls" role="toolbar" aria-label="再生">
+  <button type="button" id="tm-play" class="tm-btn" disabled>Play</button>
+  <button type="button" id="tm-stop" class="tm-btn" disabled>Stop</button>
+  <label class="tm-follow"><input type="checkbox" id="tm-follow" checked> 再生位置を追って自動スクロール</label>
+  <span id="tm-player-status" class="tm-player-status">Player: connecting…</span>
+  <span class="tm-keys">Space: 再生 / 一時停止　Esc: 停止</span>
+  <span class="tm-download" role="group" aria-label="ダウンロード">ダウンロード:
+    <button type="button" class="tm-btn" data-download="gp" disabled title="Guitar Pro・TuxGuitar・MuseScore などで開ける">Guitar Pro</button>
+    <button type="button" class="tm-btn" data-download="midi" disabled>MIDI</button>
+    <button type="button" class="tm-btn" data-download="alphatex">alphaTex</button>
+    <button type="button" class="tm-btn" data-download="print" title="ブラウザの印刷から PDF に保存できる">印刷 / PDF</button>
+  </span>
+</div>
+
+<footer class="tm-footer">
+  <p class="tm-disclaimer">
+    videotab が動画に写ったタブ譜から自動で書き起こしたもので、誤りを含むことがあります。
+    楽曲と元の動画・タブ譜の著作権は各権利者にあります。私的な練習の範囲で使い、公開・再配布・販売をしないでください。
+  </p>
+  Generated {{ generated_at }} &middot; rendered by
+  <a href="https://www.alphatab.net/" target="_blank" rel="noopener noreferrer">alphaTab</a> {{ alphatab_version }}
+  (<a href="https://mozilla.org/MPL/2.0/" target="_blank" rel="noopener noreferrer">MPL-2.0</a>,
+  <a href="https://github.com/CoderLine/alphaTab/tree/v{{ alphatab_version }}" target="_blank" rel="noopener noreferrer">source</a>)
+</footer>
+
+<script id="tm-alphatab-lib">
+{{ alphatab_js|safe }}
+</script>
+<script>
+(function () {
+  "use strict";
+
+  // 描き終わったかを外から（ブラウザでの確認など）調べられるようにする。
+  window.__tabReady = false;
+
+  var libEl = document.getElementById("tm-alphatab-lib");
+  var playBtn = document.getElementById("tm-play");
+  var stopBtn = document.getElementById("tm-stop");
+  var statusEl = document.getElementById("tm-player-status");
+  var controlsEl = document.getElementById("tm-controls");
+  var followEl = document.getElementById("tm-follow");
+
+  // Following playback scrolls only when the playing bar leaves the part of
+  // the window above the fixed controls, and can be turned off; the choice
+  // is remembered in this browser. alphaTab's own scrolling stays off: it
+  // takes the window's bottom edge as visible and would let the cursor run
+  // behind the controls.
+  var FOLLOW_KEY = "videotab.follow-playback";
+  var FOLLOW_MARGIN = 16;
+  var follow = true;
+  try { follow = window.localStorage.getItem(FOLLOW_KEY) !== "off"; } catch (e) { /* storage blocked */ }
+  followEl.checked = follow;
+  function keepPlayingBarVisible() {
+    if (!follow) { return; }
+    var bar = document.querySelector(".at-cursor-bar");
+    if (!bar) { return; }
+    var rect = bar.getBoundingClientRect();
+    if (rect.height === 0) { return; }
+    var visibleBottom = controlsEl.getBoundingClientRect().top;
+    if (rect.top < 0 || rect.bottom > visibleBottom) {
+      window.scrollTo({ top: window.scrollY + rect.top - FOLLOW_MARGIN, behavior: "smooth" });
+    }
+  }
+  function reserveRoomForControls() {
+    document.documentElement.style.setProperty("--tm-controls-room", controlsEl.offsetHeight + "px");
+  }
+  reserveRoomForControls();
+  if (window.ResizeObserver) {
+    new ResizeObserver(reserveRoomForControls).observe(controlsEl);
+  } else {
+    window.addEventListener("resize", reserveRoomForControls);
+  }
+
+  // alphaTab needs to know the absolute URL of its own script file to spin
+  // up the background Web Worker / AudioWorklet it uses for rendering and
+  // audio synthesis. There is no such URL here (the library is embedded
+  // inline rather than loaded from an external file), so we hand it a
+  // same-content blob: URL built from the library element's own source
+  // text instead. No network round-trip is involved in creating it.
+  //
+  // Under file:// the page has a null origin and the worker's importScripts
+  // of a blob: URL is refused — and alphaTab does NOT fall back on its own;
+  // rendering just never finishes and the player stays "connecting…"
+  // forever. Detect that case: render synchronously on the main thread
+  // (fine for tab-sized scores), and hand the audio-synthesis worker, which
+  // alphaTab always runs in a Web Worker, a data: URL instead — importScripts
+  // of a data: URL is allowed from a null origin. Base64 keeps the URL free
+  // of quote characters, since alphaTab splices it into
+  // importScripts('...'). Served over http(s), workers and the blob: URL
+  // stay as is.
+  var isFileUrl = window.location.protocol === "file:";
+  var canUseWorkers = !isFileUrl;
+  var selfScriptUrl = isFileUrl
+    ? "data:application/javascript;base64," + base64Utf8(libEl.textContent)
+    : URL.createObjectURL(
+        new Blob([libEl.textContent], { type: "application/javascript" })
+      );
+
+  function base64Utf8(text) {
+    var bytes = new TextEncoder().encode(text);
+    var chunks = [];
+    for (var i = 0; i < bytes.length; i += 0x8000) {
+      chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)));
+    }
+    return btoa(chunks.join(""));
+  }
+
+  // The alphaTex source is delivered as a JS string literal rather than
+  // inlined as element text (core.tex) so it never has to touch the HTML
+  // parser: the literal is JSON-encoded and then has the angle bracket and
+  // ampersand characters re-escaped as \uXXXX, so a title or lyric
+  // containing a script-closing tag or an HTML comment marker can never
+  // break out of this element -- the emitted text simply never contains
+  // those raw bytes, regardless of what the source string held.
+  var texSource = {{ tex_js_literal|safe }};
+
+  // alphaTab draws music notation glyphs using the SMuFL "Bravura" web font
+  // rather than vector paths; without a font source it fails outright
+  // ("Font not available"). We embed it as a data: URI (also vendored, see
+  // templates/vendor/VENDOR.md) so notation renders with zero network
+  // access, matching the offline-display guarantee above.
+  var fontSources = new Map();
+  fontSources.set(alphaTab.FontFileFormat.Woff2, {{ bravura_font_data_uri_js_literal|safe }});
+
+  var settings = {
+    core: {
+      scriptFile: selfScriptUrl,
+      useWorkers: canUseWorkers,
+      // Lazy loading virtualizes the score (only the on-screen slice gets
+      // real SVGs), which prints/PDFs everything past the first page as
+      // blank. Tab-sized scores render fully in one go just fine.
+      enableLazyLoading: false,
+      smuflFontSources: fontSources
+    },
+    player: {
+      enablePlayer: true,
+      scrollMode: alphaTab.ScrollMode.Off,
+      // With an opaque origin (the page served under the /files/ CSP sandbox,
+      // or opened from file://) audioWorklet.addModule of the blob: URL is
+      // refused as a cross-origin load, and playback silently stays at 0.
+      // The older ScriptProcessor output needs no module, so use it there.
+      outputMode: window.origin === "null"
+        ? alphaTab.PlayerOutputMode.WebAudioScriptProcessor
+        : alphaTab.PlayerOutputMode.WebAudioAudioWorklets,
+      // The only genuine network dependency: playback needs real audio
+      // sample data, which is too large to embed. alphaTab fetches it as
+      // soon as the player is up (when the page opens), from the same pinned
+      // alphaTab version.
+      soundFont: {{ soundfont_url_js_literal|safe }}
+    }
+  };
+
+  var api = new alphaTab.AlphaTabApi(document.getElementById("tm-alphatab-surface"), settings);
+  // 小節の長さや繰り返しをブラウザ上で調べられるよう、外から触れるようにしておく。
+  window.__tabApi = api;
+
+  api.renderStarted.on(function () {
+    window.__tabReady = false;
+  });
+  api.renderFinished.on(function () {
+    window.__tabReady = true;
+  });
+
+  // A broken/unreachable soundfont (offline, blocked CDN, ...) must never
+  // take the notation display down with it.
+  api.error.on(function () {
+    statusEl.textContent = "Player: unavailable (offline?)";
+    playBtn.disabled = true;
+    stopBtn.disabled = true;
+  });
+
+  api.playerReady.on(function () {
+    statusEl.textContent = "Player: ready";
+    playBtn.disabled = false;
+    stopBtn.disabled = false;
+  });
+
+  api.playerStateChanged.on(function (e) {
+    var playing = e.state === alphaTab.synth.PlayerState.Playing;
+    playBtn.textContent = playing ? "Pause" : "Play";
+  });
+
+  playBtn.addEventListener("click", function () {
+    if (playBtn.disabled) { return; }
+    api.playPause();
+  });
+  stopBtn.addEventListener("click", function () {
+    if (stopBtn.disabled) { return; }
+    api.stop();
+  });
+
+  followEl.addEventListener("change", function () {
+    follow = followEl.checked;
+    try { window.localStorage.setItem(FOLLOW_KEY, follow ? "on" : "off"); } catch (e) { /* storage blocked */ }
+    keepPlayingBarVisible();
+  });
+  // alphaTab moves the cursor elements when the played beat changes; check
+  // them once they are in place.
+  api.playedBeatChanged.on(function () {
+    window.requestAnimationFrame(keepPlayingBarVisible);
+  });
+
+  // Space plays / pauses from anywhere on the page except a focused control
+  // (a focused button or checkbox already reacts to Space itself). Esc stops
+  // wherever the focus is.
+  document.addEventListener("keydown", function (e) {
+    // a held key repeats keydown; act on the first press only
+    if (e.repeat) { return; }
+    var tag = e.target && e.target.tagName;
+    if (e.key === "Escape") {
+      if (!stopBtn.disabled) { api.stop(); }
+      return;
+    }
+    if (tag === "BUTTON" || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") { return; }
+    // Shift+Space (scroll up) and other modified keys keep their usual meaning.
+    if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) { return; }
+    if (e.key === " " && !playBtn.disabled) {
+      e.preventDefault();
+      api.playPause();
+    }
+  });
+
+  // ダウンロード: Guitar Pro（.gp）と MIDI は alphaTab が読み込んだ楽譜から書き出し、
+  // alphaTex はこのページに埋め込んだ元のテキストをそのまま保存する。
+  var fileStem = {{ file_stem_js_literal|safe }};
+  var downloadButtons = document.querySelectorAll("[data-download]");
+  function saveBlob(blob, name) {
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+  api.scoreLoaded.on(function () {
+    downloadButtons.forEach(function (b) { b.disabled = false; });
+  });
+  downloadButtons.forEach(function (b) {
+    b.addEventListener("click", function () {
+      var kind = b.getAttribute("data-download");
+      if (kind === "gp") {
+        var data = new alphaTab.exporter.Gp7Exporter().export(api.score, api.settings);
+        saveBlob(new Blob([data], { type: "application/octet-stream" }), fileStem + ".gp");
+      } else if (kind === "midi") {
+        api.downloadMidi();
+      } else if (kind === "alphatex") {
+        saveBlob(new Blob([texSource], { type: "text/plain;charset=utf-8" }), fileStem + ".alphatex");
+      } else if (kind === "print") {
+        window.print();
+      }
+    });
+  });
+
+  api.tex(texSource);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,307 @@
+"""check / build: 読み取り結果を検査し、つないで alphaTex と HTML にする。
+
+読み取り結果は parts/ の *.json（{"小節番号": "小節の中身"}）。分担して読んだときは
+担当ごとに 1 ファイル。境目を 2 人で重ねて読んだ小節は、内容が一致すれば 1 つにし、
+違えば食い違いとして一覧にして止める。解いた内容は resolve.json に書く。
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from videotab import confine, inside
+from videotab.alphatex import Issue, check_bars
+from videotab.render import render_html
+from videotab.workdir import create_json, load_meta, read_json, write_json
+
+DEFAULT_TUNING = "e4 b3 g3 d3 a2 e2"
+
+
+def norm(tex: str) -> str:
+    return " ".join(tex.split())
+
+
+@dataclass
+class Conflict:
+    bar: int
+    readings: list[tuple[str, str]]  # (ファイル名, 小節の中身)
+
+
+@dataclass
+class Merged:
+    bars: dict[int, str] = field(default_factory=dict)
+    source: dict[int, str] = field(default_factory=dict)
+    conflicts: list[Conflict] = field(default_factory=list)
+    resolved: list[int] = field(default_factory=list)
+
+    @property
+    def missing(self) -> list[int]:
+        if not self.bars:
+            return []
+        return [n for n in range(1, max(self.bars) + 1) if n not in self.bars]
+
+
+def load_part(path: Path) -> dict[int, str]:
+    data = read_json(path)
+    if not isinstance(data, dict):
+        raise SystemExit(f"{path}: {{\"小節番号\": \"alphaTex\"}} の形ではありません")
+    return {int(k): str(v) for k, v in data.items()}
+
+
+def part_files(workdir: Path) -> list[Path]:
+    return sorted(confine.guard(workdir / "parts").glob("*.json"))
+
+
+def merge(workdir: Path) -> Merged:
+    files = part_files(workdir)
+    if not files:
+        raise SystemExit(f"{workdir / 'parts'} に読み取り結果（*.json）がありません")
+    resolve_path = workdir / "resolve.json"
+    overrides = load_part(resolve_path) if resolve_path.exists() else {}
+
+    readings: dict[int, list[tuple[str, str]]] = {}
+    for path in files:
+        for n, tex in load_part(path).items():
+            readings.setdefault(n, []).append((path.name, tex))
+
+    merged = Merged()
+    for n in sorted(set(readings) | set(overrides)):
+        if n in overrides:
+            merged.bars[n] = overrides[n]
+            merged.source[n] = "resolve.json"
+            if len({norm(t) for _, t in readings.get(n, [])}) > 1:
+                merged.resolved.append(n)
+            continue
+        variants = {norm(t) for _, t in readings[n]}
+        if len(variants) > 1:
+            merged.conflicts.append(Conflict(n, readings[n]))
+            continue
+        merged.bars[n] = readings[n][0][1]
+        merged.source[n] = readings[n][0][0]
+    return merged
+
+
+TS_META = re.compile(r"\\ts\s+(\d+)\s+(\d+)")
+
+
+def time_signature_before(workdir: Path, bar: int, default: tuple[int, int]) -> tuple[int, int]:
+    """bar より前の小節（ほかの担当の読み取り結果も含む）で最後に出た拍子。
+
+    途中の小節から始まる担当のファイルを 1 つだけ検査するときに、それまでの拍子の変化を
+    引き継ぐため。読めないファイル（閉じ込めがあるときの、外を指すリンクを含む）は飛ばす。
+    """
+    earlier: dict[int, str] = {}
+    for path in part_files(workdir):
+        try:
+            for n, tex in load_part(path).items():
+                if n < bar:
+                    earlier.setdefault(n, tex)
+        except (SystemExit, ValueError):
+            continue
+    ts = default
+    for n in sorted(earlier):
+        m = TS_META.search(earlier[n])
+        if m:
+            ts = (int(m.group(1)), int(m.group(2)))
+    return ts
+
+
+def load_score(workdir: Path) -> dict:
+    """score.json（見出し）を読む。なければ雛形を作る。
+
+    雛形は無いときだけ新しく作る。score.json が作業フォルダの外を指すリンクなら、先が無くても作らずに断る。
+    """
+    path = confine.guard(workdir / "score.json")
+    meta = load_meta(workdir)
+    creator = video_creator(meta)
+    if not path.exists():
+        template = {
+            "title": meta.get("title") or workdir.name,
+            "subtitle": f"{creator} さんの動画のタブ譜から書き起こし" if creator else "動画のタブ譜から書き起こし",
+            "tab_by": creator,
+            "tempo": None,
+            "time_signature": [4, 4],
+            "tuning": DEFAULT_TUNING,
+            "capo": 0,
+        }
+        try:
+            create_json(path, template, root=confine.root_of(workdir))
+        except FileExistsError:
+            pass  # 確かめたあとに作られた。そのまま読む
+    score = read_json(path)
+    score.setdefault("tuning", DEFAULT_TUNING)
+    score.setdefault("time_signature", [4, 4])
+    score.setdefault("capo", 0)
+    score.setdefault("title", meta.get("title") or workdir.name)
+    score.setdefault("tab_by", creator)  # 欄を作る前の score.json でも、動画の作成者を楽譜に残す
+    return score
+
+
+def video_creator(meta: dict) -> str | None:
+    """動画の作成者（取り込むときに利用者が入れた名前）。入れていなければ None。"""
+    return str(meta.get("creator") or "").strip() or None
+
+
+def source_link(meta: dict) -> str | None:
+    """元動画のページ。https で始まり空白を含まないリンクだけを使う。
+
+    meta.json は読み手も書けるので、取り込み時の検査に頼らず、使うたびに確かめる。
+    """
+    url = str(meta.get("source_url") or "").strip()
+    if not url.startswith("https://") or any(c.isspace() for c in url):
+        return None
+    return url
+
+
+def print_issues(issues: list[Issue]) -> int:
+    errors = [i for i in issues if i.level == "error"]
+    for i in issues:
+        print(f"  {i}")
+    return len(errors)
+
+
+WORKDIR_SEARCH_DEPTH = 4  # ファイルから meta.json を探して上る階層の数
+
+
+def workdir_of(path: Path) -> Path:
+    """検査するファイルの作業フォルダ（見出しの score.json を読むフォルダ）。
+
+    閉じ込めがあればその作業フォルダ、なければファイルから 4 階層上までで meta.json を持つ
+    いちばん近いフォルダ。どちらも無ければ、parts/ の中なら parts/ の親、ほかはファイルのあるフォルダ。
+    """
+    root = confine.base()
+    if root is not None:
+        return root
+    for folder in path.parents[:WORKDIR_SEARCH_DEPTH]:
+        if (folder / "meta.json").exists():
+            return folder
+    return path.parent.parent if path.parent.name == "parts" else path.parent
+
+
+def earlier_parts_folder(path: Path, workdir: Path) -> Path:
+    """前の小節の拍子を探すフォルダ（parts/ を持つフォルダ）。
+
+    X/parts/ の中のファイルなら X、すぐ隣に parts/ があればファイルのあるフォルダ
+    （history/<日時>/resolve.json はその履歴の拍子を引き継ぐ）、どちらでもなければ作業フォルダ。
+    閉じ込めがあるときは、決まったフォルダも作業フォルダの中かを確かめる（外なら断る）。
+    """
+    if path.parent.name == "parts":
+        return confine.guard(path.parent.parent)
+    if confine.guard(path.parent / "parts").is_dir():
+        return confine.guard(path.parent)
+    return workdir
+
+
+def run_check(target: Path) -> int:
+    """part_*.json 1 つか、作業フォルダ（parts/ の全部）を検査する。誤りがあれば 1 を返す。"""
+    if target.is_file():
+        files = [target]
+        workdir = workdir_of(target)
+        earlier = earlier_parts_folder(target, workdir)
+    else:
+        workdir = target
+        files = part_files(workdir)
+        if not files:
+            raise SystemExit(f"{workdir / 'parts'} に読み取り結果（*.json）がありません")
+    has_meta = confine.guard(workdir / "meta.json").exists()
+    score = load_score(workdir) if has_meta else {"time_signature": [4, 4], "tuning": DEFAULT_TUNING}
+    strings = len(score["tuning"].split())
+    total_errors = 0
+    for path in files:
+        bars = load_part(path)
+        ts = tuple(score["time_signature"])
+        if bars and target.is_file():
+            ts = time_signature_before(earlier, min(bars), ts)
+        issues, _ = check_bars(bars, ts, strings)
+        errors = sum(1 for i in issues if i.level == "error")
+        total_errors += errors
+        print(f"{path.name}: {len(bars)} 小節（{min(bars)}〜{max(bars)}）、誤り {errors}、注意 {len(issues) - errors}")
+        print_issues(issues)
+    return 1 if total_errors else 0
+
+
+def tex_string(text: str) -> str:
+    """alphaTex の "..." に入れる文字列。区切りと紛れる " と \\ は全角に置き換える。"""
+    return '"' + str(text).replace("\\", "＼").replace('"', "＂").replace("\n", " ") + '"'
+
+
+def alphatex_document(bars: dict[int, str], score: dict) -> str:
+    ts = score["time_signature"]
+    head = [f"\\title {tex_string(score['title'])}"]
+    if score.get("subtitle"):
+        head.append(f"\\subtitle {tex_string(score['subtitle'])}")
+    if score.get("tab_by"):
+        head.append(f"\\tab {tex_string(score['tab_by'])}")  # 楽譜には描かれず、Guitar Pro の Tab 欄に入る
+    head += [f"\\tempo {score['tempo']:g}", ".", f"\\tuning {score['tuning']}"]
+    if score.get("capo"):
+        head.append(f"\\capo {score['capo']}")
+    head.append(f"\\ts {ts[0]} {ts[1]}")
+    return "\n".join(head + [" |\n".join(bars[n] for n in sorted(bars))]) + "\n"
+
+
+def run_build(workdir: Path, allow_check_errors: bool = False) -> int:
+    merged = merge(workdir)
+    score = load_score(workdir)
+    stop = False
+    root = confine.root_of(workdir)  # 出力は、リンクをたどらずに作業フォルダの中へ書く（inside）
+
+    if merged.conflicts:
+        stop = True
+        print(f"食い違い {len(merged.conflicts)} 小節（画像を見直し、正しい方を resolve.json に書く）:")
+        for c in merged.conflicts:
+            print(f"  {c.bar} 小節:")
+            for name, tex in c.readings:
+                print(f"    {name}: {norm(tex)}")
+        write_json(
+            workdir / "conflicts.json",
+            {str(c.bar): {name: tex for name, tex in c.readings} for c in merged.conflicts},
+            root=root,
+        )
+    else:
+        with inside.open_dir(root) as top:
+            inside.remove(top, "conflicts.json")  # リンクならリンクだけを消す
+    if merged.missing:
+        stop = True
+        print(f"抜けている小節: {', '.join(map(str, merged.missing))}")
+
+    issues, _ = check_bars(merged.bars, tuple(score["time_signature"]), len(score["tuning"].split()))
+    errors = sum(1 for i in issues if i.level == "error")
+    if issues:
+        print(f"検査: 誤り {errors}、注意 {len(issues) - errors}")
+        print_issues(issues)
+    if errors and not allow_check_errors:
+        stop = True
+    if not score.get("tempo"):
+        stop = True
+        print(f"{workdir / 'score.json'} に tempo（最初のテンポ）を書いてください")
+
+    print(f"小節 {len(merged.bars)}（1〜{max(merged.bars) if merged.bars else 0}）、読み取り結果 {len(part_files(workdir))} ファイル"
+          + (f"、resolve.json で解いた食い違い {len(merged.resolved)}" if merged.resolved else ""))
+    if stop:
+        print("出力を止めました。上を直してからもう一度 videotab build してください。")
+        return 1
+
+    tex = alphatex_document(merged.bars, score)
+    meta = load_meta(workdir)
+    name = workdir.name
+    html = render_html(
+        tex,
+        title=score["title"],
+        tempo=float(score["tempo"]),
+        tuning=score["tuning"],
+        capo=int(score.get("capo") or 0),
+        bar_count=len(merged.bars),
+        source_url=source_link(meta),
+        source_title=meta.get("title"),
+        source_creator=video_creator(meta),
+    )
+    out = workdir / f"{name}.html"
+    with inside.open_dir(root) as top:
+        inside.write_text(top, f"{name}.alphatex", tex, notify=print)
+        inside.write_text(top, out.name, html, notify=print)
+    print(f"出力: {out}")
+    print(f"      {workdir / f'{name}.alphatex'}")
+    return 0
+
