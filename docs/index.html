@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>videotab のしくみ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  :root {
+    --bg: #f4f6f5;
+    --paper: #ffffff;
+    --ink: #17211e;
+    --muted: #5c6a66;
+    --line: #d9e0dd;
+    --string: #b9c4c0;
+    --accent: #0f766e;        /* 機械（videotab） */
+    --accent-soft: #dcefeb;
+    --ai: #a14f0a;            /* AI（Claude Code / Codex） */
+    --ai-soft: #f7e7d4;
+    --ok: #15803d;
+    --bad: #b42318;
+    --bad-soft: #fdeceb;
+    --code-bg: #eef2f0;
+    --shadow: 0 1px 2px rgba(23, 33, 30, 0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #111615;
+      --paper: #181f1d;
+      --ink: #e6ecea;
+      --muted: #97a6a1;
+      --line: #2b3633;
+      --string: #3e4b47;
+      --accent: #3cc4b2;
+      --accent-soft: #15332f;
+      --ai: #f0a35c;
+      --ai-soft: #3a2615;
+      --ok: #5ad48a;
+      --bad: #ff8a7a;
+      --bad-soft: #3a1c19;
+      --code-bg: #1f2826;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #111615;
+    --paper: #181f1d;
+    --ink: #e6ecea;
+    --muted: #97a6a1;
+    --line: #2b3633;
+    --string: #3e4b47;
+    --accent: #3cc4b2;
+    --accent-soft: #15332f;
+    --ai: #f0a35c;
+    --ai-soft: #3a2615;
+    --ok: #5ad48a;
+    --bad: #ff8a7a;
+    --bad-soft: #3a1c19;
+    --code-bg: #1f2826;
+    --shadow: none;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Zen Kaku Gothic New", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.8;
+    padding-inline: 20px;
+    padding-block: 0 64px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  h1, h2, h3 { text-wrap: balance; line-height: 1.35; }
+  h2 { font-size: 1.45rem; font-weight: 900; margin: 0 0 6px; }
+  h3 { font-size: 1.05rem; font-weight: 700; margin: 0; }
+  p { margin: 0; }
+  code, .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
+  code { background: var(--code-bg); padding: 1px 6px; border-radius: 4px; font-size: 0.88em; }
+  a { color: var(--accent); }
+  .lead { color: var(--muted); }
+  section { padding-block: 40px 8px; }
+  .kicker {
+    font-size: 0.75rem; font-weight: 700; letter-spacing: 0.12em; color: var(--accent);
+    text-transform: uppercase; margin-bottom: 6px;
+  }
+
+  /* ---------- 冒頭: タブ譜の 6 本線 ---------- */
+  header.hero { padding-block: 48px 8px; display: grid; gap: 20px; }
+  header.hero h1 { font-size: clamp(2rem, 5vw, 3rem); font-weight: 900; margin: 0; letter-spacing: 0.01em; }
+  header.hero h1 span { color: var(--accent); }
+  .staff {
+    position: relative; background: var(--paper); border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px 16px 14px 52px; overflow-x: auto; box-shadow: var(--shadow);
+  }
+  .staff svg { display: block; min-width: 560px; width: 100%; height: auto; }
+  .staff .caption { font-size: 0.8rem; color: var(--muted); margin-top: 6px; }
+  .staff .tab-label {
+    position: absolute; left: 16px; top: 22px; font-family: "JetBrains Mono", monospace; font-weight: 600;
+    font-size: 0.8rem; line-height: 1.25; color: var(--muted); writing-mode: vertical-rl; letter-spacing: 0.2em;
+  }
+
+  /* ---------- 凡例 ---------- */
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 0.88rem; color: var(--muted); }
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; }
+  .chip i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .chip.m i { background: var(--accent); }
+  .chip.a i { background: var(--ai); }
+
+  /* ---------- 全体の流れ ---------- */
+  .flow {
+    list-style: none; margin: 18px 0 0; padding: 0;
+    display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; counter-reset: step;
+  }
+  .flow li {
+    counter-increment: step; background: var(--paper); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 12px 14px; display: flex; flex-direction: column; gap: 6px; position: relative; box-shadow: var(--shadow);
+    border-top: 4px solid var(--accent);
+  }
+  .flow li.ai { border-top-color: var(--ai); background: linear-gradient(var(--ai-soft), var(--paper) 70%); }
+  .flow li::before {
+    content: counter(step); font-family: "JetBrains Mono", monospace; font-weight: 600; font-size: 0.78rem;
+    color: var(--muted);
+  }
+  .flow .name { font-weight: 900; font-size: 1rem; }
+  .flow .who { font-size: 0.72rem; font-weight: 700; color: var(--accent); }
+  .flow li.ai .who { color: var(--ai); }
+  .flow .out { font-size: 0.8rem; color: var(--muted); line-height: 1.55; }
+  .flow .cmd { font-family: "JetBrains Mono", monospace; font-size: 0.72rem; color: var(--muted); margin-top: auto; }
+  @media (max-width: 900px) { .flow { grid-template-columns: repeat(4, 1fr); } }
+  @media (max-width: 560px) { .flow { grid-template-columns: 1fr 1fr; } }
+
+  .note {
+    margin-top: 14px; padding: 12px 14px; border-radius: 8px; background: var(--accent-soft);
+    font-size: 0.92rem;
+  }
+  .note.ai { background: var(--ai-soft); }
+
+  /* ---------- 段ごとの中身 ---------- */
+  .steps { display: grid; gap: 14px; margin-top: 18px; }
+  .step {
+    display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 18px; align-items: start;
+    background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 18px; box-shadow: var(--shadow);
+  }
+  .step .head { display: grid; gap: 4px; }
+  .step .head .n { font-family: "JetBrains Mono", monospace; font-size: 0.8rem; color: var(--muted); }
+  .step .head .who { font-size: 0.75rem; font-weight: 700; color: var(--accent); }
+  .step.ai .head .who { color: var(--ai); }
+  .step .body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .step ul { margin: 0; padding-left: 1.2em; display: grid; gap: 4px; }
+  .step .why { font-size: 0.88rem; color: var(--muted); border-left: 3px solid var(--line); padding-left: 10px; }
+  .step .why b { color: var(--ink); }
+  @media (max-width: 720px) { .step { grid-template-columns: minmax(0, 1fr); gap: 10px; } }
+  figure { margin: 0; }
+  .fig { background: var(--code-bg); border-radius: 8px; padding: 12px; overflow-x: auto; }
+  .fig svg { display: block; width: 100%; height: auto; min-width: 460px; }
+  figcaption { font-size: 0.8rem; color: var(--muted); margin-top: 6px; }
+
+  /* ---------- 分担 ---------- */
+  .split { margin-top: 18px; background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 18px; overflow-x: auto; box-shadow: var(--shadow); }
+  .split svg { display: block; width: 100%; min-width: 560px; height: auto; }
+
+  /* ---------- 2 列の比較 ---------- */
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 18px; }
+  @media (max-width: 720px) { .two { grid-template-columns: 1fr; } }
+  .box { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; box-shadow: var(--shadow); }
+  .box h3 { margin-bottom: 8px; }
+section > h3 { margin-top: 32px; }
+  .box ul { margin: 0; padding-left: 1.2em; display: grid; gap: 4px; font-size: 0.95rem; }
+  .box.yes h3 { color: var(--ok); }
+  .box.no h3 { color: var(--bad); }
+
+  /* ---------- 数字 ---------- */
+  .facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 18px; }
+  @media (max-width: 720px) { .facts { grid-template-columns: 1fr 1fr; } }
+  .fact { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; box-shadow: var(--shadow); }
+  .fact .v { font-family: "JetBrains Mono", monospace; font-weight: 600; font-size: 1.6rem; font-variant-numeric: tabular-nums; }
+  .fact .l { font-size: 0.85rem; color: var(--muted); }
+
+  /* ---------- 表 ---------- */
+  .table-wrap { overflow-x: auto; margin-top: 16px; background: var(--paper); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
+  table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  th { font-size: 0.78rem; color: var(--muted); font-weight: 700; letter-spacing: 0.04em; }
+  td:first-child { white-space: nowrap; }
+
+  pre.cmds {
+    margin: 16px 0 0; background: var(--code-bg); border-radius: 10px; padding: 14px 16px; overflow-x: auto;
+    font-family: "JetBrains Mono", monospace; font-size: 0.85rem; line-height: 1.7;
+  }
+  pre.cmds .c { color: var(--muted); }
+
+  .tex { display: grid; gap: 10px; margin-top: 12px; }
+  .tex .sample {
+    font-family: "JetBrains Mono", monospace; font-size: 1.05rem; background: var(--code-bg); border-radius: 8px;
+    padding: 10px 14px; overflow-x: auto; white-space: nowrap;
+  }
+  .tex .sample b { color: var(--accent); font-weight: 600; }
+  .tex .sample em { color: var(--ai); font-style: normal; }
+  .tex dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 0; font-size: 0.92rem; }
+  .tex dt { font-family: "JetBrains Mono", monospace; font-weight: 600; }
+  .tex dd { margin: 0; color: var(--muted); }
+
+  /* ---------- 免責事項 ---------- */
+  .disclaimer {
+    margin-top: 48px; padding: 18px 20px; border-radius: 10px;
+    background: var(--bad-soft); border: 1px solid var(--bad); border-left-width: 6px;
+  }
+  .disclaimer h2 { font-size: 1.1rem; color: var(--bad); margin: 0 0 8px; }
+  .disclaimer ul { margin: 0; padding-left: 1.2em; display: grid; gap: 4px; font-size: 0.95rem; }
+  .disclaimer b { color: var(--bad); }
+
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div>
+    <div class="kicker">videotab</div>
+    <h1>動画ファイルを渡すと、画面の<span>タブ譜</span>が 1 枚の楽譜になる</h1>
+  </div>
+  <p class="lead">「TAB 譜付き」の演奏動画は、画面に写るタブ譜が数小節ずつ流れていきます。videotab は、手元に用意した動画ファイルからそれを最初から最後まで拾い集めて、再生もダウンロードもできる 1 枚の楽譜にまとめます。画像を扱う部分は videotab 自身が受け持ちます。数字やリズムを読む部分は、あなたの Claude Code か Codex（以下「AI」）が受け持ちます。</p>
+
+  <div class="staff" aria-label="タブ譜の例">
+    <div class="tab-label">TAB</div>
+    <svg viewBox="0 0 720 150" role="img" aria-labelledby="staff-title">
+      <title id="staff-title">6 本の弦の線と、その上に乗ったフレット番号</title>
+      <g stroke="var(--string)" stroke-width="1.4">
+        <line x1="0" y1="20" x2="720" y2="20"/><line x1="0" y1="42" x2="720" y2="42"/>
+        <line x1="0" y1="64" x2="720" y2="64"/><line x1="0" y1="86" x2="720" y2="86"/>
+        <line x1="0" y1="108" x2="720" y2="108"/><line x1="0" y1="130" x2="720" y2="130"/>
+      </g>
+      <g stroke="var(--muted)" stroke-width="1.6">
+        <line x1="1" y1="20" x2="1" y2="130"/><line x1="360" y1="20" x2="360" y2="130"/><line x1="719" y1="20" x2="719" y2="130"/>
+      </g>
+      <g font-family="JetBrains Mono, monospace" font-size="15" font-weight="600" text-anchor="middle" dominant-baseline="central">
+        <g fill="var(--ink)">
+          <rect x="30" y="98" width="18" height="20" fill="var(--paper)"/><text x="39" y="108">5</text>
+          <rect x="30" y="120" width="18" height="20" fill="var(--paper)"/><text x="39" y="130">0</text>
+          <rect x="72" y="120" width="18" height="20" fill="var(--paper)"/><text x="81" y="130">0</text>
+          <rect x="114" y="98" width="18" height="20" fill="var(--paper)"/><text x="123" y="108">7</text>
+          <rect x="114" y="120" width="18" height="20" fill="var(--paper)"/><text x="123" y="130">0</text>
+          <rect x="156" y="120" width="18" height="20" fill="var(--paper)"/><text x="165" y="130">0</text>
+          <rect x="198" y="76" width="18" height="20" fill="var(--paper)"/><text x="207" y="86">7</text>
+          <rect x="198" y="98" width="18" height="20" fill="var(--paper)"/><text x="207" y="108">5</text>
+          <rect x="198" y="120" width="18" height="20" fill="var(--paper)"/><text x="207" y="130">0</text>
+          <rect x="240" y="76" width="18" height="20" fill="var(--paper)"/><text x="249" y="86">7</text>
+          <rect x="240" y="98" width="18" height="20" fill="var(--paper)"/><text x="249" y="108">5</text>
+          <rect x="240" y="120" width="18" height="20" fill="var(--paper)"/><text x="249" y="130">0</text>
+          <rect x="296" y="98" width="18" height="20" fill="var(--paper)"/><text x="305" y="108">7</text>
+          <rect x="296" y="120" width="18" height="20" fill="var(--paper)"/><text x="305" y="130">5</text>
+        </g>
+        <g fill="var(--accent)">
+          <rect x="394" y="98" width="18" height="20" fill="var(--paper)"/><text x="403" y="108">2</text>
+          <rect x="394" y="120" width="18" height="20" fill="var(--paper)"/><text x="403" y="130">0</text>
+          <rect x="446" y="98" width="18" height="20" fill="var(--paper)"/><text x="455" y="108">2</text>
+          <rect x="446" y="120" width="18" height="20" fill="var(--paper)"/><text x="455" y="130">0</text>
+          <rect x="498" y="98" width="18" height="20" fill="var(--paper)"/><text x="507" y="108">7</text>
+          <rect x="498" y="120" width="18" height="20" fill="var(--paper)"/><text x="507" y="130">0</text>
+          <rect x="550" y="98" width="18" height="20" fill="var(--paper)"/><text x="559" y="108">7</text>
+          <rect x="550" y="120" width="18" height="20" fill="var(--paper)"/><text x="559" y="130">0</text>
+          <rect x="602" y="76" width="18" height="20" fill="var(--paper)"/><text x="611" y="86">9</text>
+          <rect x="602" y="98" width="18" height="20" fill="var(--paper)"/><text x="611" y="108">7</text>
+          <rect x="654" y="76" width="18" height="20" fill="var(--paper)"/><text x="663" y="86">9</text>
+          <rect x="654" y="98" width="18" height="20" fill="var(--paper)"/><text x="663" y="108">7</text>
+        </g>
+      </g>
+      <g font-size="11" fill="var(--muted)" font-family="JetBrains Mono, monospace">
+        <text x="6" y="12">1</text><text x="366" y="12">2</text>
+      </g>
+    </svg>
+    <p class="caption">上から 1 弦〜6 弦。数字は押さえるフレット。これを「どの弦の、何フレットを、どの長さで」の並びとして読み取ります。</p>
+  </div>
+</header>
+
+<section id="flow">
+  <div class="kicker">全体の流れ</div>
+  <h2>7 つの段を順に進む</h2>
+  <p class="lead">画面で動画ファイルを選んで「タブ譜を作る」を押すと、この 7 段が自動で進みます。途中で失敗しても、その段からやり直せます。</p>
+  <div class="legend" style="margin-top:12px">
+    <span class="chip m"><i></i>videotab（画像処理とルール）</span>
+    <span class="chip a"><i></i>AI（Claude Code か Codex）</span>
+  </div>
+  <ol class="flow">
+    <li><span class="who">videotab</span><span class="name">動画の取り込み</span><span class="out">手元の動画ファイルを確かめて作業フォルダへ</span><span class="cmd">add</span></li>
+    <li><span class="who">videotab</span><span class="name">画像の切り出し</span><span class="out">1 秒に 1 枚の静止画</span><span class="cmd">frames</span></li>
+    <li><span class="who">videotab</span><span class="name">帯と線の検出</span><span class="out">タブ譜の場所と 6 本の弦の位置</span><span class="cmd">strip</span></li>
+    <li><span class="who">videotab</span><span class="name">ページ分け</span><span class="out">画面が切り替わるごとの拡大画像</span><span class="cmd">pages</span></li>
+    <li class="ai"><span class="who">AI</span><span class="name">読み取り</span><span class="out">小節ごとの楽譜データ（alphaTex）</span><span class="cmd">read</span></li>
+    <li><span class="who">videotab</span><span class="name">組み立て</span><span class="out">検査して 1 枚の楽譜（HTML）に</span><span class="cmd">build</span></li>
+    <li><span class="who">videotab</span><span class="name">時刻の照合</span><span class="out">動画の時刻と楽譜の時刻を比べる</span><span class="cmd">verify</span></li>
+  </ol>
+  <p class="note ai"><b>AI が受け持つのは 5 の「読み取り」だけ</b>です。取り込み・切り出し・検出・組み立て・照合は、決まったルールで videotab が行うので、何度やっても同じ結果になります。</p>
+</section>
+
+<section id="steps">
+  <div class="kicker">段ごとの中身</div>
+  <h2>それぞれの段で何をしているか</h2>
+  <div class="steps">
+
+    <article class="step">
+      <div class="head"><span class="n">1・2</span><h3>取り込みと切り出し</h3><span class="who">videotab ＋ ffprobe・ffmpeg</span></div>
+      <div class="body">
+        <ul>
+          <li>手元の動画ファイル（.mp4 .m4v .mov .webm .mkv .avi、4 GB まで）を、画面のアップロードか <code>videotab add</code> で受け取ります。ffprobe で映像が入っていることを確かめてから、新しい作業フォルダに取り込みます。</li>
+          <li>ffmpeg で 1 秒に 1 枚の画像にします。ファイル名に番号と時刻が入ります（例 <code>0154_02m33s000.png</code>）。</li>
+          <li>ffprobe と ffmpeg は、ローカルのファイルを動画の入れ物としてだけ読みます。再生リストなどとして解釈しないので、ネットにも、ほかのファイルにも触れません。</li>
+          <li>手元の画像フォルダや、komadori で書き出した ZIP も取り込めます。</li>
+        </ul>
+        <p class="why"><b>なぜ解像度が大事か</b>　360p だとタブの数字が数ピクセルしかなく、6 と 8 を見分けにくいためです。1080p ほどの動画を使ってください。</p>
+      </div>
+    </article>
+
+    <article class="step">
+      <div class="head"><span class="n">3</span><h3>帯と線の検出</h3><span class="who">videotab</span></div>
+      <div class="body">
+        <p>画像を 1 行ずつ見て、「上と下の両方より濃い画素」が横にどれだけ並ぶかを数えます。弦の線は横いっぱいに続くので、その行だけ値が高くなります。</p>
+        <figure>
+          <div class="fig">
+            <svg viewBox="0 0 560 150" role="img" aria-labelledby="f1">
+              <title id="f1">行ごとの線の強さのグラフ。等間隔の 6 本がタブ、狭い間隔の 5 本は五線</title>
+              <g font-family="JetBrains Mono, monospace" font-size="10" fill="var(--muted)">
+                <text x="4" y="146">上</text><text x="540" y="146">下</text>
+              </g>
+              <line x1="20" y1="130" x2="550" y2="130" stroke="var(--string)"/>
+              <!-- 五線（5 本、狭い間隔） -->
+              <g fill="var(--muted)" opacity="0.7">
+                <rect x="60" y="70" width="4" height="60"/><rect x="80" y="70" width="4" height="60"/>
+                <rect x="100" y="70" width="4" height="60"/><rect x="120" y="70" width="4" height="60"/>
+                <rect x="140" y="70" width="4" height="60"/>
+              </g>
+              <text x="102" y="60" font-size="11" text-anchor="middle" fill="var(--muted)">五線（5 本）→ 除く</text>
+              <!-- タブ（6 本、広い間隔） -->
+              <g fill="var(--accent)">
+                <rect x="260" y="40" width="5" height="90"/><rect x="300" y="40" width="5" height="90"/>
+                <rect x="340" y="40" width="5" height="90"/><rect x="380" y="40" width="5" height="90"/>
+                <rect x="420" y="40" width="5" height="90"/><rect x="460" y="40" width="5" height="90"/>
+              </g>
+              <text x="362" y="30" font-size="11" text-anchor="middle" fill="var(--accent)">等間隔の 6 本 → タブ（1〜6 弦）</text>
+              <!-- 数字だけの行（低い） -->
+              <g fill="var(--muted)" opacity="0.5"><rect x="200" y="118" width="4" height="12"/><rect x="505" y="120" width="4" height="10"/></g>
+            </svg>
+          </div>
+          <figcaption>横軸は画面の上から下、縦棒は線の強さ。数字だけの行は低いまま。</figcaption>
+        </figure>
+        <ul>
+          <li>等間隔に並んだ 6 本の山をタブ譜とみなします。五線（5 本）は混ざりません。</li>
+          <li>タブの線の間の地の色が続く範囲を「帯」とし、小節番号や五線もその中に入れます。</li>
+          <li>白地に灰色の薄い線、暗い地に明るい線のどちらにも対応します。</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="step">
+      <div class="head"><span class="n">4</span><h3>ページ分け</h3><span class="who">videotab</span></div>
+      <div class="body">
+        <p>帯の中の「インク」（地の色と大きく違う画素）を、今のページの最初の画像と比べます。差が大きくなったら次のページです。</p>
+        <ul>
+          <li><b>ページ送り</b>: 帯全体が一気に変わるので、差がはっきり大きい。</li>
+          <li><b>横スクロール</b>: 差は中くらいですが、帯を横にずらして重ねると差が縮む。これでスクロールだと分かります。</li>
+          <li><b>演奏位置の枠や、今弾いている音の色替え</b>: 差は一部だけで、ずらすとかえって差が広がるので、ページとは数えません。</li>
+        </ul>
+        <p>ページごとに、弦の線の間隔が約 30px になるまで拡大し、左の余白に弦の番号を書き込みます。数字がどの弦に乗っているかを取り違えないためです。</p>
+        <p class="why"><b>なぜ弦の番号を書き込むか</b>　手で読んでいたとき、線 1 本ずれて別の弦と読む間違いが実際に起きたからです。</p>
+      </div>
+    </article>
+
+    <article class="step ai">
+      <div class="head"><span class="n">5</span><h3>読み取り</h3><span class="who">AI（Claude Code / Codex）</span></div>
+      <div class="body">
+        <p>拡大画像を見て、小節ごとに「どの弦の何フレットを、どの長さで」を楽譜データ（alphaTex）に書きます。リズムは五線の音符か、タブの下の棒と連桁の本数で読みます。</p>
+        <div class="tex">
+          <div class="sample"><b>(5.5 0.6)</b>.<em>8</em>&nbsp;&nbsp;<b>(0.6)</b>.<em>8</em>&nbsp;&nbsp;<b>(7.5 0.6)</b>.<em>8</em>&nbsp;&nbsp;…</div>
+          <dl>
+            <dt>5.5</dt><dd>5 弦の 5 フレット（フレット.弦）</dd>
+            <dt>(5.5 0.6)</dt><dd>同時に鳴らす音（和音）</dd>
+            <dt>.8</dt><dd>8 分音符。1 小節の合計が拍子ちょうどになるよう読む</dd>
+          </dl>
+        </div>
+        <p class="why"><b>なぜここだけ AI か</b>　数字の場所は画像処理で分かりますが、リズム（付点・休符・連符）や記号（繰り返し、パームミュート、チョーキング）の意味を決めるには、文脈を見た判断が要るからです。</p>
+      </div>
+    </article>
+
+    <article class="step">
+      <div class="head"><span class="n">6</span><h3>組み立て</h3><span class="who">videotab</span></div>
+      <div class="body">
+        <ul>
+          <li>分けて読んだ結果をつなぎ、1 小節ずつ検査します。1 小節の長さが拍子と合うか、タイ（前の音から伸ばす印）のつながり先があるか、書き方のくせがないか。</li>
+          <li>抜けた小節や、重ねて読んだ小節で答えが食い違う所があれば、先へ進まずに AI に直させます。</li>
+          <li>通れば、楽譜を描く alphaTab を埋め込んだ 1 ファイルの HTML にします。オフラインでも表示でき、再生もできます（再生の音源データだけはネットから読みます）。</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="step">
+      <div class="head"><span class="n">7</span><h3>時刻の照合</h3><span class="who">videotab</span></div>
+      <div class="body">
+        <p>繰り返し記号（「7x」など）とテンポの変化を展開して、各小節が何秒目に鳴り始めるかを計算します。それを「このページが出たのは何秒目か」と比べて、ずれがないかを確かめます。</p>
+        <p class="why"><b>何が分かるか</b>　繰り返しの回数やテンポの読み違いは、音だけ見ても気づきにくいのですが、時刻がずれるので見つけられます。</p>
+      </div>
+    </article>
+
+  </div>
+</section>
+
+<section id="readers">
+  <div class="kicker">読み取りの分担</div>
+  <h2>ページを分けて同時に読み、境目は重ねて読む</h2>
+  <p class="lead">長い曲は、ページをいくつかのまとまりに分け、まとまりごとに AI を起動して同時に読ませます（最大 4 つ）。となり合うまとまりは境目のページを両方で読むので、2 つの答えが合うかどうかで読み違いに気づけます。</p>
+  <div class="split">
+    <svg viewBox="0 0 760 210" role="img" aria-labelledby="f2">
+      <title id="f2">38 ページを 4 つのまとまり（A から D）に分け、境目の 1 ページを重ねて読む図と、そのあとの検査とまとめ役の AI の流れ</title>
+      <g font-family="JetBrains Mono, monospace" font-size="11" fill="var(--muted)">
+        <text x="20" y="18">ページ 1</text><text x="700" y="18" text-anchor="end">38</text>
+      </g>
+      <line x1="20" y1="26" x2="740" y2="26" stroke="var(--string)"/>
+      <g font-family="Zen Kaku Gothic New, sans-serif" font-size="13" font-weight="700">
+        <rect x="20" y="36" width="200" height="30" rx="6" fill="var(--ai-soft)" stroke="var(--ai)"/>
+        <text x="120" y="56" text-anchor="middle" fill="var(--ink)">A（1〜11）</text>
+        <rect x="200" y="74" width="190" height="30" rx="6" fill="var(--ai-soft)" stroke="var(--ai)"/>
+        <text x="295" y="94" text-anchor="middle" fill="var(--ink)">B（11〜20）</text>
+        <rect x="370" y="36" width="190" height="30" rx="6" fill="var(--ai-soft)" stroke="var(--ai)"/>
+        <text x="465" y="56" text-anchor="middle" fill="var(--ink)">C（20〜29）</text>
+        <rect x="540" y="74" width="200" height="30" rx="6" fill="var(--ai-soft)" stroke="var(--ai)"/>
+        <text x="640" y="94" text-anchor="middle" fill="var(--ink)">D（29〜38）</text>
+      </g>
+      <g fill="var(--accent)" opacity="0.25">
+        <rect x="200" y="30" width="20" height="78"/><rect x="370" y="30" width="20" height="78"/><rect x="540" y="30" width="20" height="78"/>
+      </g>
+      <g font-size="10.5" fill="var(--accent)" text-anchor="middle" font-family="Zen Kaku Gothic New, sans-serif">
+        <text x="210" y="122">重ねて読む</text><text x="380" y="122">重ねて読む</text><text x="550" y="122">重ねて読む</text>
+      </g>
+      <g font-family="Zen Kaku Gothic New, sans-serif" font-size="12.5">
+        <rect x="20" y="146" width="220" height="50" rx="8" fill="var(--paper)" stroke="var(--line)"/>
+        <text x="130" y="167" text-anchor="middle" fill="var(--ink)" font-weight="700">検査の誤り</text>
+        <text x="130" y="185" text-anchor="middle" fill="var(--muted)">→ 担当の AI に直させる</text>
+        <rect x="270" y="146" width="220" height="50" rx="8" fill="var(--paper)" stroke="var(--line)"/>
+        <text x="380" y="167" text-anchor="middle" fill="var(--ink)" font-weight="700">食い違い・抜け</text>
+        <text x="380" y="185" text-anchor="middle" fill="var(--muted)">→ まとめ役の AI が画像を見直す</text>
+        <rect x="520" y="146" width="220" height="50" rx="8" fill="var(--paper)" stroke="var(--line)"/>
+        <text x="630" y="167" text-anchor="middle" fill="var(--ink)" font-weight="700">AI が何も書かなかった</text>
+        <text x="630" y="185" text-anchor="middle" fill="var(--muted)">→ 1 回だけ読み直させる</text>
+      </g>
+    </svg>
+  </div>
+  <p class="note">食い違いや抜けは、まとめ役の AI（つなぎ目の問題を解くために別に起動する AI）が画像を見直して解きます。決め手は、数字がどの線に乗っているか（弦の位置）と、和音として自然か（構成音・キー）です。解いた答えは最初の読み取り結果とは別に残るので、あとから見直せます。</p>
+  <p class="note">AI は最後に短い報告（書いた小節、自信のない所、曲の構成、直した小節）を日本語で返します。画面では、この報告を見出し・箇条書き・太字・コードを整えて表示します。報告の中に HTML が書かれていても、文字として出るだけで動きません。</p>
+</section>
+
+<section id="safety">
+  <div class="kicker">安全の仕組み</div>
+  <h2>AI には、できることを絞っている</h2>
+  <p class="lead">読み取りでは、videotab があなたの Claude Code / Codex を裏で起動します。普段の設定のまま動かすと何でもできてしまうので、起動のしかたで、できることを絞っています。</p>
+  <div class="two">
+    <div class="box yes">
+      <h3>許していること</h3>
+      <ul>
+        <li>その曲の作業フォルダ（曲ごとに画像や結果を置くフォルダ）の中のファイルを読む</li>
+        <li>決まった結果のファイルにだけ書く</li>
+        <li>検査（<code>videotab check</code>）と拡大（<code>videotab zoom</code>）を実行する。この 2 つも、作業フォルダの外には触れません</li>
+      </ul>
+    </div>
+    <div class="box no">
+      <h3>止めていること</h3>
+      <ul>
+        <li>作業フォルダの外のファイルを読む・書く</li>
+        <li>ほかのコマンド（python、cat など）を実行する</li>
+        <li>あなたの普段の設定（自動で許可するモードなど）を引き継ぐ。モデルと推論の強さだけは、画面で選んだ値か、選ばなければ普段の値を使います</li>
+      </ul>
+    </div>
+  </div>
+  <p class="note">Claude Code では、止めていることを聞かずに拒否します。Codex では、書き込みを作業フォルダの中に限りますが、ファイルを読むことやコマンドの実行までは止めきれません。Codex の sandbox が既定で書ける一時フォルダ（<code>/tmp</code>・<code>$TMPDIR</code>）も、書き込み先から外します（確かめたのは macOS で、Linux では確かめていません）。どちらも API キーは使わず、あなたが手元でログインしている Claude Code / Codex の利用枠で動きます。画面で選んだモデルと推論の強さはその曲の読み取りだけに使い、普段の設定は書き換えません。</p>
+  <h3>videotab も、あなたのほかのファイルを書き換えない</h3>
+  <p>AI（特に Codex）は、作業フォルダの中に「別の場所を指すファイル」を置けます。AI が動画の画像に書かれた指示にだまされてそれを置いても、videotab があなたのほかのファイルを書き換えることはありません。</p>
+  <p>できあがったタブ譜のページも作業フォルダの中にあり、AI が書き換えられます。そのため画面は、タブ譜のページを画面とは切り離して（別の出どころとして）表示します。ページに与えるのは表示・再生・ダウンロード・印刷・リンクに要る許可だけで、ページの中から曲の追加・やり直し・削除はできません。画面の中や別のタブで開いたときは、自動スクロールの選択は記憶されません。</p>
+  <p>動画を受け取る口は、画面からの操作だけを受け付けます。大きさや形式は中身を読む前に確かめ、受け取った動画は本体専用の一時フォルダで確かめてから取り込みます。</p>
+  <p class="note">起動のしかたや、ほかのファイルを守るしくみの詳しい説明は <a href="safety.md">安全のしくみ（docs/safety.md）</a> にあります。</p>
+</section>
+
+<section id="result">
+  <div class="kicker">できあがり</div>
+  <h2>見る・鳴らす・持ち出す</h2>
+  <p class="lead">できあがった楽譜は画面の中でそのまま表示・再生でき、いくつかの形式でダウンロードできます。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>形式</th><th>使いみち</th></tr></thead>
+      <tbody>
+        <tr><td>HTML</td><td>1 ファイルで、オフラインでも表示できる。再生・自動スクロール付き</td></tr>
+        <tr><td>Guitar Pro（.gp）</td><td>Guitar Pro・TuxGuitar・MuseScore などで開いて編集・練習する</td></tr>
+        <tr><td>MIDI（.mid）</td><td>DAW や練習アプリで鳴らす</td></tr>
+        <tr><td>alphaTex</td><td>videotab が楽譜を作るときのテキストのデータ</td></tr>
+        <tr><td>印刷 / PDF</td><td>ブラウザの印刷から紙や PDF に</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="numbers">
+  <div class="kicker">試した結果</div>
+  <h2>演奏動画 1 本（1080p）で試した結果</h2>
+  <p class="lead">同じ曲を人が手で書き起こした楽譜を正解として、小節ごとに比べました。</p>
+  <div class="facts">
+    <div class="fact"><div class="v">38</div><div class="l">ページ（画面の切り替わり）</div></div>
+    <div class="fact"><div class="v">約 3 分</div><div class="l">読み取りにかかった時間（4 つに分けて同時に読んだとき）</div></div>
+    <div class="fact"><div class="v">107/107</div><div class="l">小節で、音と長さが手作業と一致</div></div>
+    <div class="fact"><div class="v">±1 秒</div><div class="l">動画の時刻とのずれ（ほとんどの小節）</div></div>
+  </div>
+  <p class="note ai">一致しなかったのは、パームミュートの付け方と、テンポ変化を書く位置が 1 拍ずれた所だけでした。それでも読み違いがありえるので、元の動画と照らして使ってください。</p>
+</section>
+
+<section id="use">
+  <div class="kicker">使い方</div>
+  <h2>画面から使う・コマンドで使う</h2>
+  <pre class="cmds"><span class="c"># 画面を開く（http://127.0.0.1:8765/ 。手元のマシンの中だけで動く）</span>
+uv run videotab serve
+
+<span class="c"># 画面を使わずに、同じ流れを通しで</span>
+uv run videotab run 動画.mp4
+
+<span class="c"># 読み取りのモデルと推論の強さを選ぶこともできる（画面でも選べる。選ばなければ普段の設定）</span>
+uv run videotab run 動画.mp4 --model opus --effort max
+
+<span class="c"># 段ごとに動かすこともできる（ID は add が表示する）</span>
+uv run videotab add 動画.mp4 / frames ID / strip ID / pages ID / check ID / build ID / verify ID</pre>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>作業フォルダ work/&lt;ID&gt;/</th><th>中身</th></tr></thead>
+      <tbody>
+        <tr><td><code>video.*</code></td><td>取り込んだ動画</td></tr>
+        <tr><td><code>frames/</code></td><td>1 秒 1 枚の画像</td></tr>
+        <tr><td><code>pages/</code></td><td>ページごとの拡大画像と一覧（index.md）</td></tr>
+        <tr><td><code>parts/</code></td><td>AI の読み取り結果（分けて読んだまとまりごと）</td></tr>
+        <tr><td><code>resolve.json</code></td><td>まとめ役の AI が解いた小節</td></tr>
+        <tr><td><code>readers/</code></td><td>AI の報告と、ページごとの最初の小節の番号</td></tr>
+        <tr><td><code>job.json</code> / <code>job.log</code></td><td>段ごとの進み具合とログ</td></tr>
+        <tr><td><code>&lt;ID&gt;.html</code></td><td>できあがった楽譜</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">動画・画像・楽譜は、手元の <code>work/</code> フォルダに保存されます（git の管理外なので、リポジトリには入りません）。要らなくなった曲は、画面の「この曲を消す」で作業フォルダごと消せます（元に戻せません）。</p>
+  <p class="note">詳しい使い方は <a href="../README.md">README</a> と、<a href="usage.md">画面の使い方</a>・<a href="model-settings.md">読み取りのモデルと推論の強さ</a>・<a href="commands.md">コマンド</a> にあります。</p>
+</section>
+
+<aside class="disclaimer" aria-labelledby="disclaimer-title">
+  <h2 id="disclaimer-title">免責事項</h2>
+  <ul>
+    <li>書き起こしは画像処理と AI による自動のもので、<b>誤りを含むことがあります</b>。</li>
+    <li>動画・画像・書き起こしたタブ譜には、楽曲や元の動画・タブ譜の作り手の著作物が含まれます。</li>
+    <li><b>私的な練習の範囲で使い、公開・再配布・販売をしないでください。</b></li>
+    <li>読み取りは、あなたの Claude Code / Codex の利用枠を使います。強い設定ほど利用枠を多く使い、時間もかかります。</li>
+    <li>すべての項目は <a href="../README.md#免責事項">README の免責事項</a> にあります。</li>
+  </ul>
+</aside>
+
+</div>
+</body>
+</html>
