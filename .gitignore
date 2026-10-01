@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+
+# 動画・画像・書き起こし結果（市販曲の素材なのでコミットしない）
+work/
+*.mp4
+*.webm
+*.mkv
+*.mov
+*.m4v
+*.avi
+
+.DS_Store
+.playwright-mcp/
+docs/plans/

@@ -1,0 +1,32 @@
+[project]
+name = "videotab"
+version = "0.1.0"
+description = "手元の動画ファイルから、画面に写るタブ譜を alphaTab の HTML＋alphaTex に書き起こす"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "shimabox", email = "shimabox@gmail.com" }
+]
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "jinja2>=3.1.6",
+    "numpy>=2.3",
+    "pillow>=11.3",
+]
+
+[project.scripts]
+videotab = "videotab.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["tests"]
+testpaths = ["tests"]
