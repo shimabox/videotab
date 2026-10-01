@@ -1,0 +1,1016 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>videotab</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Cg stroke=%22%230f766e%22%3E%3Cpath d=%22M1 3h14M1 6h14M1 9h14M1 12h14%22/%3E%3C/g%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f6f3;
+    --panel: #ffffff;
+    --ink: #1c1c1e;
+    --muted: #6b6b70;
+    --line: #e3e1dc;
+    --accent: #0f766e;
+    --accent-ink: #ffffff;
+    --accent-soft: #e0f2ef;
+    --ok: #15803d;
+    --warn: #b45309;
+    --bad: #b91c1c;
+    --run: #2563eb;
+    --code-bg: #f1f0ec;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151517;
+      --panel: #1e1e21;
+      --ink: #ececef;
+      --muted: #9a9aa2;
+      --line: #313136;
+      --accent: #2dd4bf;
+      --accent-ink: #062b27;
+      --accent-soft: #123a36;
+      --ok: #4ade80;
+      --warn: #fbbf24;
+      --bad: #f87171;
+      --run: #60a5fa;
+      --code-bg: #17171a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Segoe UI", sans-serif;
+  }
+  a { color: var(--accent); }
+  header.top {
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+    padding: 18px 24px 6px; max-width: 1280px; margin: 0 auto;
+  }
+  header.top h1 { margin: 0; font-size: 1.35rem; letter-spacing: 0.02em; }
+  header.top p { margin: 0; color: var(--muted); font-size: 0.9rem; }
+  main { max-width: 1280px; margin: 0 auto; padding: 8px 24px 40px; }
+
+  form.new {
+    display: flex; flex-direction: column; gap: 10px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px; margin-bottom: 6px;
+  }
+  form.new .new-main { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  /* 動画ファイルの選択とドロップの欄 */
+  form.new .drop {
+    position: relative; display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 320px; cursor: pointer;
+    padding: 10px 12px; border: 1px dashed var(--line); border-radius: 8px; background: var(--bg); color: var(--muted);
+  }
+  form.new .drop.over { border-color: var(--accent); background: var(--accent-soft); color: var(--ink); }
+  form.new .drop.chosen { border-style: solid; color: var(--ink); }
+  form.new .drop:focus-within { outline: 2px solid var(--accent); outline-offset: -1px; }
+  form.new .drop input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  form.new .drop .drop-text { overflow-wrap: anywhere; font-size: 0.9rem; }
+  form.new .fields { display: flex; flex-wrap: wrap; gap: 10px; }
+  form.new .fields input {
+    font: inherit; font-size: 0.9rem; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--bg); color: var(--ink); min-width: 0; flex: 1 1 200px;
+  }
+  form.new .fields input.wide { flex-basis: 320px; }
+  form.new .fields input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  form.new .upload { display: flex; gap: 10px; align-items: center; font-size: 0.85rem; color: var(--muted); }
+  form.new .upload[hidden] { display: none; }
+  form.new .upload progress { flex: 1 1 auto; max-width: 420px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg label { padding: 9px 12px; cursor: pointer; font-size: 0.88rem; color: var(--muted); }
+  .seg input { display: none; }
+  .seg input:checked + span { color: var(--ink); font-weight: 600; }
+  .seg label:has(input:checked) { background: var(--accent-soft); }
+  button {
+    font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--ink); padding: 9px 16px;
+  }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .error { color: var(--bad); font-size: 0.88rem; margin: 6px 2px 12px; min-height: 1.2em; }
+
+  /* 読み取りのモデルと推論の強さ（新規フォームとやり直しの行で同じ部品）。
+     モデル・「その他」の入力欄・推論の強さ・ボタンは専用の段（.pick-row）に並べ、
+     幅を決めておく。エンジンを切り替えても、選択肢の出し入れで位置が動かない。
+     select の幅は「普段の設定（モデルごと）」「普段の設定（gpt-6-astra）」などが切れない幅 */
+  .pick-row { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; }
+  .picker, #new-picker { display: contents; }
+  .picker .pick { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--muted); min-width: 0; max-width: 100%; }
+  .picker select, .picker input {
+    font: inherit; font-size: 0.86rem; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--ink); min-width: 0; max-width: 100%;
+  }
+  .picker .pick-model { width: 17em; }
+  .picker .pick-custom { width: 13em; }
+  .picker .pick-effort { width: 17em; }
+  .picker select:focus, .picker input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .picker input[aria-invalid=true] { border-color: var(--bad); }
+  /* 「その他」の入力欄はいつも表示し、「その他」以外では入力できない薄い表示にする */
+  .picker .pick-custom:disabled { color: var(--muted); opacity: 0.55; cursor: not-allowed; }
+  .picker .pick-error { order: 1; flex-basis: 100%; color: var(--bad); font-size: 0.8rem; }
+  .picker .pick-error:empty { display: none; }
+  form.new .picker select, form.new .picker input { background: var(--bg); }
+  @media (max-width: 560px) {
+    .pick-row .pick, .pick-row .pick-custom { flex: 1 1 100%; }
+    .pick-row .pick > span { flex: none; width: 5.5em; }
+    .picker .pick select { flex: 1 1 auto; width: auto; }
+    .picker .pick-custom { width: auto; }
+  }
+
+  .layout { display: grid; grid-template-columns: 290px 1fr; gap: 18px; align-items: start; }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } form.new .drop { flex-basis: 100%; } }
+
+  .list { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .list h2, .panel h2 { font-size: 0.8rem; color: var(--muted); font-weight: 600; margin: 0; padding: 12px 14px 8px; letter-spacing: 0.04em; }
+  .list ul { list-style: none; margin: 0; padding: 0 0 6px; max-height: 70vh; overflow: auto; }
+  .list li button {
+    all: unset; box-sizing: border-box; display: block; width: 100%; cursor: pointer;
+    padding: 9px 14px; border-top: 1px solid var(--line);
+  }
+  .list li button:hover { background: var(--bg); }
+  .list li button[aria-current=true] { background: var(--accent-soft); }
+  .list .t { display: block; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .list .s { display: flex; gap: 8px; align-items: center; font-size: 0.76rem; color: var(--muted); }
+  .empty { color: var(--muted); padding: 14px; font-size: 0.88rem; }
+
+  .pill { display: inline-flex; align-items: center; gap: 5px; font-size: 0.76rem; font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .st-done .dot { background: var(--ok); } .st-done { color: var(--ok); }
+  .st-failed .dot, .st-stopped .dot { background: var(--bad); } .st-failed, .st-stopped { color: var(--bad); }
+  .st-running .dot { background: var(--run); animation: pulse 1.2s infinite; } .st-running { color: var(--run); }
+  .st-queued .dot { background: var(--warn); } .st-queued { color: var(--warn); }
+  @keyframes pulse { 50% { opacity: 0.3; } }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 0 18px 18px; }
+  .panel + .panel { margin-top: 18px; }
+  .head { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 16px 0 6px; }
+  .head h3 { margin: 0; font-size: 1.15rem; flex: 1 1 320px; }
+  .sub { color: var(--muted); font-size: 0.82rem; margin: 0 0 12px; }
+
+  ol.steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+  @media (max-width: 1100px) { ol.steps { grid-template-columns: repeat(4, 1fr); } }
+  @media (max-width: 560px) { ol.steps { grid-template-columns: repeat(2, 1fr); } }
+  ol.steps li {
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 0.84rem;
+    display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  }
+  ol.steps li .n { font-weight: 600; display: flex; gap: 6px; align-items: center; }
+  ol.steps li .m { color: var(--muted); font-size: 0.75rem; overflow-wrap: anywhere; }
+  ol.steps li.running { border-color: var(--run); }
+  ol.steps li.failed { border-color: var(--bad); }
+  ol.steps li.done .n .dot { background: var(--ok); }
+  ol.steps li.running .n .dot { background: var(--run); animation: pulse 1.2s infinite; }
+  ol.steps li.failed .n .dot { background: var(--bad); }
+  ol.steps li button { margin-top: 4px; padding: 4px 8px; font-size: 0.75rem; }
+
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; font-size: 0.85rem; }
+  .actions select { font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+  .actions.retry { flex-direction: column; align-items: stretch; }
+  .actions .retry-main { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+  button.del-outline {
+    color: var(--bad); border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); background: var(--panel);
+    font-size: 0.8rem; padding: 4px 11px; margin-left: auto;
+  }
+  button.del-outline:hover:not(:disabled) { background: color-mix(in srgb, var(--bad) 10%, var(--panel)); border-color: var(--bad); }
+  button.del-outline:focus-visible { outline: 2px solid var(--bad); outline-offset: 2px; }
+  button.stop-outline { background: var(--panel); font-size: 0.8rem; padding: 4px 11px; margin-left: auto; }
+
+  .result .head a { font-size: 0.88rem; }
+  .result iframe { width: 100%; height: 78vh; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  details { margin-top: 12px; }
+  summary { cursor: pointer; font-size: 0.88rem; color: var(--muted); }
+  pre.log {
+    background: var(--code-bg); border-radius: 8px; padding: 10px 12px; margin: 8px 0 0;
+    max-height: 340px; overflow: auto; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap;
+  }
+  /* 読み手の報告。担当名はクラスで出す（報告の太字 strong と取り違えない）。
+     改行をそのまま見せるのは段落とコードだけ（箇条書き・見出しは要素で形を作る） */
+  .notes .note { border-left: 3px solid var(--accent); padding: 2px 10px; margin: 10px 0; font-size: 0.86rem; }
+  .notes .note-who { display: block; font-size: 0.78rem; font-weight: 700; color: var(--muted); }
+  .notes .note p { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .notes .note h4, .notes .note h5, .notes .note h6 { margin: 10px 0 2px; line-height: 1.4; }
+  .notes .note h4 { font-size: 0.95rem; }
+  .notes .note h5 { font-size: 0.9rem; }
+  .notes .note h6 { font-size: 0.86rem; }
+  .notes .note ul, .notes .note ol { margin: 4px 0; padding-left: 1.4em; }
+  .notes .note li { margin: 1px 0; overflow-wrap: anywhere; }
+  .notes .note code { font: 0.8rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code-bg); border-radius: 4px; padding: 0 4px; }
+  .notes .note pre { background: var(--code-bg); border-radius: 6px; padding: 8px 10px; margin: 6px 0; overflow: auto; white-space: pre-wrap; }
+  .notes .note pre code { background: none; padding: 0; }
+  .welcome { color: var(--muted); padding: 24px 0 8px; }
+  footer.disclaimer {
+    max-width: 1280px; margin: 0 auto; padding: 0 24px 32px;
+    color: var(--muted); font-size: 0.78rem; line-height: 1.7;
+  }
+  footer.disclaimer h2 { font-size: 0.8rem; margin: 0 0 4px; }
+  footer.disclaimer p { margin: 0 0 12px; }
+  footer.disclaimer ul { margin: 0; padding-left: 1.2em; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>videotab</h1>
+  <p>手元の動画ファイルから、画面に写るタブ譜を 1 枚の楽譜に書き起こします</p>
+</header>
+<main>
+  <form class="new" id="new">
+    <div class="new-main">
+      <label class="drop" id="drop">
+        <input type="file" id="file" accept=".mp4,.m4v,.mov,.webm,.mkv,.avi" aria-label="動画ファイル">
+        <span class="drop-text" id="drop-text"></span>
+      </label>
+      <div class="seg" role="radiogroup" aria-label="読み取りに使うエージェント" id="engines"></div>
+    </div>
+    <div class="fields">
+      <input type="text" id="title" maxlength="200" placeholder="題名（ファイルを選ぶとファイル名が入ります）" aria-label="題名">
+      <input type="text" id="creator" maxlength="200" placeholder="動画の作成者（任意）" aria-label="動画の作成者">
+      <input type="text" id="source-url" class="wide" maxlength="2000" inputmode="url" autocomplete="off" spellcheck="false"
+        placeholder="元動画のページ（任意）例: https://example.com/..." aria-label="元動画のページ">
+    </div>
+    <div class="pick-row">
+      <span id="new-picker"></span>
+      <button class="primary" type="submit" id="go">タブ譜を作る</button>
+    </div>
+    <div class="upload" id="upload" hidden>
+      <progress id="upload-bar" max="100" value="0"></progress>
+      <span id="upload-text" aria-live="polite"></span>
+      <button type="button" id="abort">中止</button>
+    </div>
+  </form>
+  <p class="error" id="form-error"></p>
+
+  <div class="layout">
+    <section class="list" aria-label="曲の一覧">
+      <h2>曲</h2>
+      <ul id="jobs"></ul>
+    </section>
+    <section id="detail"><div class="panel"><p class="welcome">動画ファイルを選ぶかドロップして「タブ譜を作る」を押すと、ここに進み具合が出ます。</p></div></section>
+  </div>
+</main>
+<footer class="disclaimer">
+  <h2>仕組み</h2>
+  <p>画面に写ったタブ譜の数字やリズムは、裏で起動した Claude Code か Codex が読みます（手元のログインと利用枠を使います）。1 曲に数分〜十数分かかります。取り込んだ動画・切り出した画像・タブ譜は work/ に保存され、外には出ません。</p>
+  <h2>免責事項</h2>
+  <ul>
+    <li>書き起こしは画像処理と AI による自動のもので、誤りを含むことがあります。正確さは保証しません。元の動画と照らして確かめてください。</li>
+    <li>動画・切り出した画像・書き起こしたタブ譜には、楽曲や元の動画・タブ譜の作り手の著作物が含まれます。私的な練習の範囲で使い、公開・再配布・販売をしないでください。</li>
+    <li>videotab は現状のまま提供され、使用によって生じた損害について作者は責任を負いません。記載の名称は各社・各プロジェクトの商標で、videotab はそれらと提携していません。</li>
+  </ul>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+  var ENGINE_LABELS = { claude: "Claude Code", codex: "Codex" };
+  var STATUS_LABELS = { done: "できあがり", running: "実行中", queued: "順番待ち", failed: "失敗", stopped: "中断", idle: "—" };
+  var selected = decodeURIComponent(location.hash.slice(1)) || null;
+  var current = null;
+  var pollTimer = null;
+  // { id, step, engine, picks: { エンジン: モデルと推論の強さの欄の状態 } }: 行を作り直すときの初期値
+  var retryChoice = {};
+  var retryRow = null;  // やり直しの行（同じ曲・同じ状態の間は同じ DOM を使う）
+  var shownResult = null;  // いま表示しているタブ譜（id と html）。同じなら iframe を作り直さない
+  var OPTIONS = null;  // GET /api/jobs の agent_options（選択肢と普段の値）
+  var newPicker = null;  // 新規フォームのモデルと推論の強さの欄（更新では作り直さない）
+  var OTHER = "__other__";  // モデルの「その他（入力）」
+  var MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:\/\[\]-]{0,127}$/;  // agent_settings.MODEL_RE と同じ形
+  var MODEL_HINT = "モデル名は英数字で始まる 128 文字までの名前にしてください（使える記号は . _ : / [ ] -）";
+  var STORE_KEY = "videotab.agentChoice";  // ブラウザが覚える、エンジンごとのモデルと推論の強さ
+  var MAX_NAMES = 10;  // 「その他」で入力したモデル名を覚える数
+  var WELCOME = document.getElementById("detail").innerHTML;  // 何も選んでいないときの詳細の欄
+  var refreshError = null;  // 更新（refresh）で #form-error に出した文。次の更新が通ったら消す
+  var cancelingId = null;  // 「止める」を送っている曲
+  var deletingId = null;  // 「この曲を消す」を送っている曲（更新で作り直しても、ボタンを押せないままにする）
+
+  function $(id) { return document.getElementById(id); }
+  function el(tag, attrs, children) {
+    var e = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      if (k === "text") e.textContent = attrs[k];
+      else if (k === "class") e.className = attrs[k];
+      else if (k.slice(0, 2) === "on") e.addEventListener(k.slice(2), attrs[k]);
+      else e.setAttribute(k, attrs[k]);
+    });
+    (children || []).forEach(function (c) { if (c) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
+    return e;
+  }
+  // method を省くと、本文があれば POST、無ければ GET。GET 以外は画面からの操作の見出し（X-Videotab）を付ける
+  function api(path, body, method) {
+    method = method || (body === undefined ? "GET" : "POST");
+    var opts = { method: method };
+    if (method !== "GET") opts.headers = { "X-Videotab": "1" };
+    if (body !== undefined) {
+      opts.body = JSON.stringify(body);
+      opts.headers = opts.headers || {};
+      opts.headers["Content-Type"] = "application/json";
+    }
+    // サーバーが返したエラーには HTTP のステータス（status）を付ける。status の無いエラーは通信の失敗
+    return fetch(path, opts).then(function (r) {
+      function fail(d) { var e = new Error((d && d.error) || r.statusText || String(r.status)); e.status = r.status; throw e; }
+      return r.json().then(function (d) { if (!r.ok) fail(d); return d; },
+        function (err) { if (!r.ok) fail(null); throw err; });
+    });
+  }
+  function pill(status) {
+    return el("span", { class: "pill st-" + status }, [el("span", { class: "dot" }), STATUS_LABELS[status] || status]);
+  }
+  function when(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    return (d.getMonth() + 1) + "/" + d.getDate() + " " + String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  }
+  function duration(step) {
+    var s = step.seconds;
+    if (s == null && step.started && !step.ended) s = (Date.now() - new Date(step.started)) / 1000;
+    if (s == null) return "";
+    s = Math.round(s);
+    return s >= 60 ? Math.floor(s / 60) + " 分 " + (s % 60) + " 秒" : s + " 秒";
+  }
+
+  // --- 読み取りのモデルと推論の強さ
+
+  function engineOptions(engine) {
+    return (OPTIONS && OPTIONS[engine]) || { models: null, efforts: [], usual: {} };
+  }
+  function aliases(engine) { return engineOptions(engine).models || []; }
+  function validModel(engine, v) {
+    return typeof v === "string" && (aliases(engine).indexOf(v) >= 0 || MODEL_RE.test(v));
+  }
+  function validEffort(engine, v) { return typeof v === "string" && engineOptions(engine).efforts.indexOf(v) >= 0; }
+
+  // ブラウザが覚える選択。localStorage が使えない・読めない・書けないときは、ページの中だけで覚える
+  var memory = null;
+  function loadMemory() {
+    if (memory) return memory;
+    var data = null;
+    try { data = JSON.parse(window.localStorage.getItem(STORE_KEY) || "null"); } catch (e) { data = null; }
+    memory = data && typeof data === "object" && !Array.isArray(data) ? data : {};
+    return memory;
+  }
+  function saveMemory() {
+    try { window.localStorage.setItem(STORE_KEY, JSON.stringify(memory)); } catch (e) { /* ページの中だけで覚える */ }
+  }
+  // 覚えた選択を、選択肢の一覧と形で確かめて返す（合わない値は普段の設定）
+  function remembered(engine) {
+    var m = loadMemory()[engine];
+    m = m && typeof m === "object" ? m : {};
+    var names = Array.isArray(m.names) ? m.names.filter(function (n) { return validModel(engine, n); }) : [];
+    return {
+      model: validModel(engine, m.model) ? m.model : null,
+      effort: validEffort(engine, m.effort) ? m.effort : null,
+      names: names.slice(0, MAX_NAMES)
+    };
+  }
+  function remember(engine, choice, fromForm) {
+    var cur = remembered(engine);
+    var names = cur.names;
+    if (choice.model && aliases(engine).indexOf(choice.model) < 0) {
+      names = [choice.model].concat(names.filter(function (n) { return n !== choice.model; })).slice(0, MAX_NAMES);
+    }
+    var next = { model: choice.model, effort: choice.effort, names: names };
+    if (JSON.stringify(next) === JSON.stringify(cur)) return;
+    loadMemory()[engine] = next;
+    saveMemory();
+    // 覚えた内容が変わったら、新規フォームの表示も合わせる
+    if (newPicker) {
+      if (!fromForm && newPicker.engine() === engine) newPicker.setEngine(engine, pickState(engine, next));
+      else newPicker.relabel();
+    }
+    if (retryRow) retryRow.picker.relabel();
+  }
+
+  // 選択（{ model, effort }、null は普段の設定）を欄の状態にする
+  function pickState(engine, choice) {
+    choice = choice || {};
+    var effort = choice.effort || "";
+    if (!choice.model) return { sel: "", text: "", effort: effort };
+    if (aliases(engine).indexOf(choice.model) >= 0) return { sel: choice.model, text: "", effort: effort };
+    return { sel: OTHER, text: choice.model, effort: effort };
+  }
+
+  var pickerCount = 0;
+  function makePicker(onChange) {
+    var listId = "model-names-" + (++pickerCount);
+    var model = el("select", { class: "pick-model", "aria-label": "読み取りのモデル" });
+    var custom = el("input", { type: "text", class: "pick-custom", "aria-label": "モデル名（その他）", list: listId,
+      autocomplete: "off", autocapitalize: "off", spellcheck: "false" });
+    var names = el("datalist", { id: listId });
+    var effort = el("select", { class: "pick-effort", "aria-label": "読み取りの推論の強さ" });
+    var error = el("span", { class: "pick-error", "aria-live": "polite" });
+    var root = el("span", { class: "picker" }, [
+      el("label", { class: "pick" }, [el("span", { text: "モデル" }), model]),
+      custom, names,
+      el("label", { class: "pick" }, [el("span", { text: "推論の強さ" }), effort]),
+      error
+    ]);
+    var engine = null;
+
+    // 「その他」の入力欄はいつも表示し、「その他」のときだけ入力できるようにする（入力済みの文字は残す）
+    function customEnabled() { return !custom.disabled; }
+    function enableCustom(on) {
+      custom.disabled = !on;
+      custom.placeholder = on ? "モデル名を入力" : "「その他」を選んで入力";
+    }
+    function showError(message) {
+      error.textContent = message || "";
+      custom.setAttribute("aria-invalid", message ? "true" : "false");
+      if (message && customEnabled()) custom.focus();
+    }
+    function state() { return { sel: model.value, text: custom.value, effort: effort.value }; }
+    function relabel() {
+      // 更新で変えるのは「普段の設定（…）」の文字と候補だけ（選択は変えない）
+      var o = engineOptions(engine), u = o.usual || {};
+      model.options[0].textContent = "普段の設定（" + (u.model || "—") + "）";
+      var eu = engine === "claude" && model.value !== "" ? u.effort_with_model : u.effort;
+      effort.options[0].textContent = "普段の設定（" + (eu || "—") + "）";
+      var list = remembered(engine).names;
+      if (o.model_hint && list.indexOf(o.model_hint) < 0) list = list.concat([o.model_hint]);
+      var sig = list.join("\n");
+      if (names.getAttribute("data-sig") !== sig) {
+        names.textContent = "";
+        list.forEach(function (n) { names.appendChild(el("option", { value: n })); });
+        names.setAttribute("data-sig", sig);
+      }
+    }
+    function setEngine(next, st) {
+      engine = next;
+      st = st || { sel: "", text: "", effort: "" };
+      model.textContent = "";
+      model.appendChild(el("option", { value: "" }));
+      aliases(engine).forEach(function (a) { model.appendChild(el("option", { value: a, text: a })); });
+      model.appendChild(el("option", { value: OTHER, text: "その他（入力）" }));
+      effort.textContent = "";
+      effort.appendChild(el("option", { value: "" }));
+      engineOptions(engine).efforts.forEach(function (v) { effort.appendChild(el("option", { value: v, text: v })); });
+      model.value = st.sel;
+      if (model.selectedIndex < 0) model.value = "";
+      custom.value = st.sel === OTHER ? st.text : "";
+      enableCustom(model.value === OTHER);
+      effort.value = st.effort;
+      if (effort.selectedIndex < 0) effort.value = "";
+      showError("");
+      relabel();
+    }
+    // 送る前の検査。「その他」で空・形が違うときは送らない
+    function check() {
+      var st = state(), m = null;
+      if (st.sel === OTHER) {
+        var t = st.text.trim();
+        if (!t) return { ok: false, message: "「その他」のときは、モデル名を入れてください" };
+        if (!MODEL_RE.test(t)) return { ok: false, message: MODEL_HINT };
+        m = t;
+      } else if (st.sel) {
+        m = st.sel;
+      }
+      return { ok: true, value: { model: m, effort: st.effort || null } };
+    }
+    model.addEventListener("change", function () {
+      enableCustom(model.value === OTHER);
+      showError("");
+      relabel();
+      if (customEnabled()) custom.focus();
+      onChange();
+    });
+    custom.addEventListener("input", function () { if (error.textContent) showError(""); onChange(true); });
+    custom.addEventListener("change", function () { onChange(); });
+    effort.addEventListener("change", function () { onChange(); });
+    return {
+      root: root, setEngine: setEngine, relabel: relabel, state: state, check: check, showError: showError,
+      engine: function () { return engine; }
+    };
+  }
+
+  function checkedEngine() {
+    var input = document.querySelector("#engines input[name=engine]:checked");
+    return input ? input.value : null;
+  }
+  function setupNewPicker() {
+    // 新規フォームは変更時に覚える（入力中の文字は、欄を離れたときに覚える）
+    newPicker = makePicker(function (typing) {
+      if (typing) return;
+      var c = newPicker.check();
+      if (c.ok) remember(newPicker.engine(), c.value, true);
+    });
+    $("new-picker").appendChild(newPicker.root);
+    var engine = checkedEngine() || "claude";
+    newPicker.setEngine(engine, pickState(engine, remembered(engine)));
+    // エンジンを切り替えると、そのエンジンの選択肢と覚えた選択に入れ替える
+    $("engines").addEventListener("change", function () {
+      var next = checkedEngine();
+      if (next && next !== newPicker.engine()) newPicker.setEngine(next, pickState(next, remembered(next)));
+    });
+  }
+
+  // --- 読み手の報告
+  // サーバーが解析した木（notes_blocks）を DOM にする。要素は下の決まった種類から選び、
+  // データから要素名・属性を作らない（ol の start だけは整数と確かめて付ける）。
+  // 文字は textContent / createTextNode だけで入れるので、報告の中の HTML は文字として見える
+
+  var NOTE_MAX_DEPTH = 16;  // 入れ子の深さの上限（サーバーは 8 段までにしている）
+  function noteText(v) { return typeof v === "string" ? v : v == null ? "" : JSON.stringify(v); }
+  function noteInline(parent, nodes) {
+    if (!Array.isArray(nodes)) return;
+    nodes.forEach(function (n) {
+      if (!n || typeof n !== "object") return;
+      if (n.t === "code") {
+        var c = document.createElement("code");
+        c.textContent = noteText(n.text);
+        parent.appendChild(c);
+      } else if (n.t === "b") {
+        var b = document.createElement("strong");
+        noteInline(b, n.inline);
+        parent.appendChild(b);
+      } else {
+        parent.appendChild(document.createTextNode(noteText(n.text)));
+      }
+    });
+  }
+  function noteBlocks(parent, blocks, depth) {
+    if (!Array.isArray(blocks) || depth > NOTE_MAX_DEPTH) return;
+    blocks.forEach(function (b) {
+      if (!b || typeof b !== "object") return;
+      var e;
+      if (b.t === "h") {
+        e = document.createElement(b.level === 1 ? "h4" : b.level === 2 ? "h5" : "h6");
+        noteInline(e, b.inline);
+      } else if (b.t === "p") {
+        e = document.createElement("p");
+        noteInline(e, b.inline);
+      } else if (b.t === "code") {
+        e = document.createElement("pre");
+        var c = document.createElement("code");
+        c.textContent = noteText(b.text);
+        e.appendChild(c);
+      } else if (b.t === "list") {
+        e = document.createElement(b.ordered === true ? "ol" : "ul");
+        if (b.ordered === true && Number.isInteger(b.start) && b.start >= 0 && b.start <= 999999999) e.start = b.start;
+        (Array.isArray(b.items) ? b.items : []).forEach(function (it) {
+          var li = document.createElement("li");
+          if (it && typeof it === "object") {
+            noteInline(li, it.inline);
+            noteBlocks(li, it.children, depth + 1);
+          }
+          e.appendChild(li);
+        });
+      } else {
+        return;
+      }
+      parent.appendChild(e);
+    });
+  }
+  // 担当 1 人ぶん。解析した木が無ければ（notes.json を手で書き換えた場合など）原文を文字のまま出す
+  function noteBox(d, k) {
+    var box = document.createElement("div");
+    box.className = "note";
+    var who = document.createElement("span");
+    who.className = "note-who";
+    who.textContent = k;
+    box.appendChild(who);
+    var blocks = d.notes_blocks && Object.prototype.hasOwnProperty.call(d.notes_blocks, k) ? d.notes_blocks[k] : null;
+    if (Array.isArray(blocks)) {
+      noteBlocks(box, blocks, 0);
+    } else {
+      var raw = document.createElement("p");
+      raw.textContent = noteText(d.notes[k]);
+      box.appendChild(raw);
+    }
+    return box;
+  }
+
+  // --- 一覧と詳細
+
+  var AVAILABLE = {};
+  function renderEngines(engines, def) {
+    // engines: { claude: true, codex: false } のように、手元にコマンドがあるか
+    AVAILABLE = engines;
+    var box = $("engines");
+    box.textContent = "";
+    var names = Object.keys(engines);
+    var usable = names.filter(function (n) { return engines[n]; });
+    var pick = engines[def] ? def : usable[0];
+    names.forEach(function (name) {
+      var input = el("input", { type: "radio", name: "engine", value: name });
+      if (!engines[name]) input.disabled = true;
+      if (name === pick) input.checked = true;
+      var label = el("label", engines[name] ? {} : { title: name + " コマンドが見つかりません", style: "opacity:0.45;cursor:not-allowed" },
+        [input, el("span", { text: ENGINE_LABELS[name] || name })]);
+      box.appendChild(label);
+    });
+    if (!usable.length) {
+      $("go").disabled = true;
+      $("form-error").textContent = "Claude Code（claude）か Codex（codex）を入れてログインすると使えます。画像の読み取りにどちらかが必要です。";
+    }
+  }
+
+  function renderList(jobs) {
+    var ul = $("jobs");
+    ul.textContent = "";
+    if (!jobs.length) { ul.appendChild(el("li", { class: "empty", text: "まだありません" })); return; }
+    jobs.forEach(function (j) {
+      var b = el("button", { type: "button", "aria-current": String(j.id === selected), onclick: function () { select(j.id); } }, [
+        el("span", { class: "t", text: j.title, title: j.title }),
+        el("span", { class: "s" }, [pill(j.status), when(j.updated)])
+      ]);
+      ul.appendChild(el("li", {}, [b]));
+    });
+  }
+
+  function retry(step) {
+    var row = retryRow;
+    if (!row) return;
+    var engine = row.eng.value;
+    var c = row.picker.check();
+    if (!c.ok) { row.picker.showError(c.message); return; }
+    // モデルと推論の強さは、普段の設定（null）も含めて常に明示して送る
+    api("/api/jobs/" + encodeURIComponent(selected) + "/retry", { step: step, engine: engine, model: c.value.model, effort: c.value.effort })
+      .then(function () {
+        remember(engine, c.value, false);  // やり直しの行は「実行」が成功したときに覚える
+        retryChoice = {};
+        return refresh();
+      }).catch(function (e) { alert(e.message); });
+  }
+
+  // #detail の中は、進み具合とタブ譜（変わったときだけ作り直す）に分ける。進み具合のうち、
+  // 見出し・段・報告・ログは更新のたびに作り直し、やり直しの行は同じ曲・同じ状態の間は保つ
+  function areas() {
+    var box = $("detail");
+    var progress = box.querySelector(":scope > .progress-area");
+    if (!progress) {
+      box.textContent = "";
+      retryRow = null;
+      progress = el("div", { class: "progress-area" }, [el("div", { class: "panel" }, [
+        el("div", { class: "p-top" }), el("div", { class: "p-retry" }), el("div", { class: "p-bottom" })
+      ])]);
+      box.appendChild(progress);
+      box.appendChild(el("div", { class: "result-area" }));
+    }
+    return {
+      top: progress.querySelector(".p-top"), retry: progress.querySelector(".p-retry"),
+      bottom: progress.querySelector(".p-bottom"), result: box.querySelector(":scope > .result-area")
+    };
+  }
+
+  // やり直しの行の、エンジンごとの初期値: job のエンジンはその曲に保存された選択、
+  // ほかのエンジンはブラウザが覚えた選択（無ければ普段の設定）
+  function retryInitial(engine) {
+    if (retryChoice.picks && retryChoice.picks[engine]) return retryChoice.picks[engine];
+    var d = retryRow ? retryRow.job : current;
+    if (d && engine === d.engine) return pickState(engine, d.choice);
+    return pickState(engine, remembered(engine));
+  }
+
+  function buildRetryRow(d, key) {
+    var row = { key: key, job: d };
+    var sel = el("select", { "aria-label": "やり直す段" });
+    d.steps.forEach(function (s) { sel.appendChild(el("option", { value: s.name, text: s.label + " から" })); });
+    // 初期選択は「読み取り」。中断した曲は、済んだ段をやり直さないよう最初の未完了の段にする
+    var readStep = d.steps.findIndex(function (s) { return s.name === "read"; });
+    var firstUndone = d.status === "stopped" ? d.steps.findIndex(function (s) { return s.status !== "done"; }) : -1;
+    if (retryChoice.step) sel.value = retryChoice.step;
+    else if (firstUndone >= 0) sel.selectedIndex = firstUndone;
+    else if (readStep >= 0) sel.selectedIndex = readStep;
+    sel.addEventListener("change", function () { retryChoice.step = sel.value; });
+    var eng = el("select", { name: "engine", "aria-label": "読み取りに使うエージェント" });
+    Object.keys(ENGINE_LABELS).forEach(function (k) {
+      var o = el("option", { value: k, text: ENGINE_LABELS[k] + (AVAILABLE[k] === false ? "（見つかりません）" : "") });
+      if (AVAILABLE[k] === false) o.disabled = true;
+      if (k === (retryChoice.engine || d.engine)) o.selected = true;
+      eng.appendChild(o);
+    });
+    var picker = makePicker(function () {
+      retryChoice.picks = retryChoice.picks || {};
+      retryChoice.picks[picker.engine()] = picker.state();
+    });
+    row.picker = picker;
+    row.eng = eng;
+    retryRow = row;
+    picker.setEngine(eng.value, retryInitial(eng.value));
+    eng.addEventListener("change", function () {
+      retryChoice.engine = eng.value;
+      picker.setEngine(eng.value, retryInitial(eng.value));
+    });
+    row.el = el("div", { class: "actions retry" }, [
+      el("div", { class: "retry-main" }, ["やり直す:", sel, eng]),
+      el("div", { class: "pick-row" }, [
+        picker.root,
+        el("button", { type: "button", text: "実行", onclick: function () { retry(sel.value); } })
+      ])
+    ]);
+    return row;
+  }
+
+  // 曲を消す。id と曲名は、ボタンを作ったときの値を使う（confirm の間に選択が変わっても取り違えない）
+  function removeJob(id, title, button) {
+    if (deletingId !== null) return;
+    if (!window.confirm("『" + title + "』を消します。動画・画像・タブ譜・読み取りの結果がすべて消え、元に戻せません。消しますか？")) return;
+    deletingId = id;
+    button.disabled = true;
+    function gone() {
+      if (selected === id) deselect();
+      return refresh();
+    }
+    api("/api/jobs/" + encodeURIComponent(id), undefined, "DELETE").then(function () {
+      deletingId = null;
+      return gone();
+    }, function (e) {
+      deletingId = null;
+      if (e.status === 404) return gone();  // もう無い
+      alert(e.status ? e.message : "サーバーに届きません: " + e.message);
+      return refresh();
+    });
+  }
+
+  // 実行中の曲を止める・順番待ちから外す。id と曲名は、ボタンを作ったときの値を使う
+  function cancelJob(id, title, queued, button) {
+    if (cancelingId !== null) return;
+    if (!queued && !window.confirm("『" + title + "』を止めます。動いている段は、やり直すとその段の最初から始まります。止めますか？")) return;
+    cancelingId = id;
+    button.disabled = true;
+    api("/api/jobs/" + encodeURIComponent(id) + "/cancel", {}).then(function () {
+      cancelingId = null;
+      return refresh();
+    }, function (e) {
+      cancelingId = null;
+      if (e.status !== 400) alert(e.status ? e.message : "サーバーに届きません: " + e.message);  // 400 はもう終わっていた
+      return refresh();
+    });
+  }
+
+  function choiceText(d) {
+    var c = d.choice || {};
+    return (c.model ? "・モデル " + c.model : "") + (c.effort ? "・推論の強さ " + c.effort : "");
+  }
+
+  function renderDetail(d) {
+    var area = areas();
+    var top = area.top, bottom = area.bottom;
+    var logWasOpen = bottom.querySelector("details.log-box") ? bottom.querySelector("details.log-box").open : d.status === "running";
+    var notesWasOpen = bottom.querySelector("details.notes") ? bottom.querySelector("details.notes").open : false;
+    var logPre = bottom.querySelector("pre.log");
+    var stick = !logPre || logPre.scrollTop + logPre.clientHeight >= logPre.scrollHeight - 8;
+    top.textContent = "";
+    bottom.textContent = "";
+    if (retryChoice.id !== d.id) retryChoice = { id: d.id };
+
+    // 実行中・順番待ちの曲は消せないので、ボタンを出さない
+    var del = null;
+    if (d.status !== "running" && d.status !== "queued") {
+      var delId = d.id, delTitle = d.title || d.id;
+      del = el("button", { type: "button", class: "del-outline", text: "この曲を消す" });
+      del.addEventListener("click", function () { removeJob(delId, delTitle, del); });
+      del.disabled = deletingId !== null;
+    }
+    // 実行中・順番待ちの曲には、止めるボタンを出す
+    var stop = null;
+    if (d.status === "running" || d.status === "queued") {
+      var stopId = d.id, stopTitle = d.title || d.id, queued = d.status === "queued";
+      stop = el("button", { type: "button", class: "stop-outline",
+        text: d.stopping ? "止めています…" : queued ? "順番待ちから外す" : "止める" });
+      stop.addEventListener("click", function () { cancelJob(stopId, stopTitle, queued, stop); });
+      stop.disabled = !!d.stopping || cancelingId !== null;
+    }
+    var head = el("div", { class: "head" }, [el("h3", { text: d.title }), pill(d.status), del || stop]);
+    // source_url はサーバーが https のものだけを返す
+    var sub = el("p", { class: "sub" }, [
+      d.source_url ? el("a", { href: d.source_url, target: "_blank", rel: "noopener noreferrer", text: "元の動画" }) : null,
+      d.source_url ? "　" : null,
+      d.creator ? "作成: " + d.creator + "　" : null,
+      "読み取り: " + (ENGINE_LABELS[d.engine] || d.engine) + choiceText(d),
+      d.created ? "　開始 " + when(d.created) : "",
+      (d.status === "done" || d.status === "failed") && d.finished ? "　終了 " + when(d.finished) : ""
+    ]);
+    var steps = el("ol", { class: "steps" });
+    d.steps.forEach(function (s) {
+      var li = el("li", { class: s.status }, [
+        el("span", { class: "n" }, [el("span", { class: "dot" }), s.label]),
+        el("span", { class: "m", text: [duration(s), s.message].filter(Boolean).join("・") || (s.status === "pending" ? "まだ" : "") })
+      ]);
+      if (s.status === "failed" && d.status !== "running" && d.status !== "queued") {
+        li.appendChild(el("button", { type: "button", onclick: function () { retry(s.name); }, text: "ここからやり直す" }));
+      }
+      steps.appendChild(li);
+    });
+    top.appendChild(head);
+    top.appendChild(sub);
+    top.appendChild(steps);
+
+    // やり直しの行は、同じ曲・同じ状態の間は作り直さない（入力中の文字・フォーカス・開いた select を保つ）
+    var showRow = d.status !== "running" && d.status !== "queued" && d.steps.length > 0;
+    var key = showRow ? d.id + "|" + d.status : null;
+    if (!retryRow || retryRow.key !== key) {
+      area.retry.textContent = "";
+      retryRow = null;
+      if (showRow) area.retry.appendChild(buildRetryRow(d, key).el);
+    } else {
+      retryRow.job = d;
+      retryRow.picker.relabel();
+    }
+
+    var notesKeys = Object.keys(d.notes || {});
+    if (notesKeys.length) {
+      var notes = el("details", { class: "notes" }, [el("summary", { text: "読み手の報告（自信のない所・曲の構成）" })]);
+      notes.open = notesWasOpen;
+      notesKeys.forEach(function (k) { notes.appendChild(noteBox(d, k)); });
+      bottom.appendChild(notes);
+    }
+    var log = el("details", { class: "log-box" }, [el("summary", { text: "ログ" }), el("pre", { class: "log", text: d.log.join("\n") })]);
+    log.open = logWasOpen;
+    bottom.appendChild(log);
+
+    // タブ譜は、別の曲になったか出力が作り直されたときだけ入れ替える（再生やスクロールを保つ）
+    var resultKey = d.html ? d.id + "/" + d.html + "/" + (d.updated || "") : null;
+    if (d.status === "running" || d.status === "queued") resultKey = shownResult;  // 実行中は前の表示のまま
+    if (resultKey !== shownResult) {
+      area.result.textContent = "";
+      if (d.html) {
+        var src = "/files/" + encodeURIComponent(d.id) + "/" + encodeURIComponent(d.html) + "?v=" + encodeURIComponent(d.updated || "");
+        var stem = (d.title || d.id).replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "_").replace(/^[ ._]+|[ ._]+$/g, "").slice(0, 120) || "tab";
+        area.result.appendChild(el("div", { class: "panel result" }, [
+          el("div", { class: "head" }, [
+            el("h3", { text: "タブ譜" }),
+            el("a", { href: src, download: stem + ".html", title: "1 ファイルで、オフラインでも表示できる", text: "HTML をダウンロード" }),
+            el("a", { href: src, target: "_blank", rel: "noopener", text: "別のタブで開く" })
+          ]),
+          // sandbox は src より先に付ける（値は server.py の FILES_SANDBOX と同じ。allow-same-origin は与えない）
+          el("iframe", { sandbox: "allow-scripts allow-downloads allow-modals allow-popups allow-popups-to-escape-sandbox", src: src, title: "タブ譜" })
+        ]));
+      }
+      shownResult = resultKey;
+    }
+    var pre = bottom.querySelector("pre.log");
+    if (pre && stick) pre.scrollTop = pre.scrollHeight;
+    current = d;
+  }
+
+  function refresh() {
+    return api("/api/jobs").then(function (data) {
+      renderList(data.jobs);
+      OPTIONS = data.agent_options || OPTIONS;
+      if (!$("engines").children.length) renderEngines(data.engines, data.default_engine);
+      if (!newPicker) setupNewPicker();
+      else newPicker.relabel();
+      if (!selected) return;
+      var id = selected;
+      return api("/api/jobs/" + encodeURIComponent(id)).then(function (d) {
+        if (id === selected) renderDetail(d);  // 返事を待つ間に選択が変わった（消したなど）ら出さない
+      }, function (e) {
+        // 開いている曲が無くなった（消したなど）ときは、エラーにせず選択を外す
+        if (e.status !== 404) throw e;
+        if (id === selected) deselect();
+      });
+    }).then(function () {
+      if (refreshError !== null && $("form-error").textContent === refreshError) $("form-error").textContent = "";
+      refreshError = null;
+    }, function (e) {
+      refreshError = (e.status ? "読み込めませんでした: " : "サーバーに届きません: ") + e.message;
+      $("form-error").textContent = refreshError;
+    }).then(schedule);
+  }
+  function deselect() {
+    selected = null;
+    current = null;
+    shownResult = null;
+    retryChoice = {};
+    retryRow = null;
+    $("detail").innerHTML = WELCOME;
+    Array.prototype.forEach.call($("jobs").querySelectorAll("button[aria-current]"), function (b) { b.setAttribute("aria-current", "false"); });
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+  function schedule() {
+    clearTimeout(pollTimer);
+    var busy = current && (current.status === "running" || current.status === "queued");
+    pollTimer = setTimeout(refresh, busy ? 2000 : 6000);
+  }
+  function select(id) {
+    selected = id;
+    current = null;
+    shownResult = null;
+    retryChoice = {};
+    retryRow = null;
+    var box = $("detail");
+    box.textContent = "";
+    history.replaceState(null, "", "#" + encodeURIComponent(id));
+    refresh();
+  }
+
+  // --- 動画ファイルの選択・ドロップと送信
+
+  var VIDEO_EXTS = [".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi"];  // add.VIDEO_EXTS と同じ
+  var MAX_BYTES = 4 * 1024 * 1024 * 1024;  // add.MAX_BYTES と同じ（4 GB）
+  var DROP_HINT = "動画ファイルを選ぶか、ここにドロップ（" + VIDEO_EXTS.join(" ") + "、4 GB まで）";
+  var chosen = null;  // 送る動画ファイル
+  var uploading = null;  // 送っている XMLHttpRequest
+
+  function sizeText(n) {
+    return n >= 1024 * 1024 * 1024 ? (n / 1024 / 1024 / 1024).toFixed(2) + " GB" : (n / 1024 / 1024).toFixed(1) + " MB";
+  }
+  function fileProblem(f) {
+    var dot = f.name.lastIndexOf(".");
+    var ext = dot > 0 ? f.name.slice(dot).toLowerCase() : "";
+    if (VIDEO_EXTS.indexOf(ext) < 0) return "動画ファイル（" + VIDEO_EXTS.join(" ") + "）を選んでください";
+    if (f.size <= 0) return "動画が空です";
+    if (f.size > MAX_BYTES) return "動画が大きすぎます（4 GB まで）";
+    return null;
+  }
+  function showChosen() {
+    $("drop").classList.toggle("chosen", !!chosen);
+    $("drop-text").textContent = chosen ? chosen.name + "（" + sizeText(chosen.size) + "）" : DROP_HINT;
+  }
+  function choose(f) {
+    if (!f || uploading) return;
+    var problem = fileProblem(f);
+    $("form-error").textContent = problem || "";
+    if (problem) return;
+    chosen = f;
+    var dot = f.name.lastIndexOf(".");
+    $("title").value = dot > 0 ? f.name.slice(0, dot) : f.name;  // 題名は、ファイル名（拡張子を除く）から始める
+    showChosen();
+  }
+  $("file").addEventListener("change", function () { choose($("file").files[0]); $("file").value = ""; });
+  var drop = $("drop");
+  drop.addEventListener("dragover", function (ev) { ev.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", function () { drop.classList.remove("over"); });
+  drop.addEventListener("drop", function (ev) {
+    ev.preventDefault();
+    drop.classList.remove("over");
+    choose(ev.dataTransfer && ev.dataTransfer.files[0]);
+  });
+  // 欄の外に落としても、ブラウザがページを動画に切り替えないようにする
+  window.addEventListener("dragover", function (ev) { ev.preventDefault(); });
+  window.addEventListener("drop", function (ev) { ev.preventDefault(); });
+  showChosen();
+
+  function goEnabled() { return Object.keys(AVAILABLE).some(function (k) { return AVAILABLE[k]; }); }
+  function uploadDone(message) {
+    uploading = null;
+    $("upload").hidden = true;
+    $("go").disabled = !goEnabled();
+    if (message) $("form-error").textContent = message;
+  }
+  $("abort").addEventListener("click", function () { if (uploading) uploading.abort(); });
+
+  $("new").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    if (uploading) return;
+    if (!chosen) { $("form-error").textContent = "動画ファイルを選んでください"; return; }
+    var problem = fileProblem(chosen);
+    if (problem) { $("form-error").textContent = problem; return; }
+    var link = $("source-url").value.trim();
+    if (link && !/^https:\/\/\S+$/.test(link)) { $("form-error").textContent = "元動画のページは https:// で始まる URL にしてください"; return; }
+    var engine = checkedEngine();
+    var c = newPicker ? newPicker.check() : { ok: true, value: { model: null, effort: null } };
+    if (!c.ok) { newPicker.showError(c.message); return; }
+    $("go").disabled = true;
+    $("form-error").textContent = "";
+    var params = new URLSearchParams();
+    var fields = { name: chosen.name, engine: engine, model: c.value.model, effort: c.value.effort,
+      title: $("title").value.trim(), creator: $("creator").value.trim(), source_url: link };
+    Object.keys(fields).forEach(function (k) { if (fields[k]) params.set(k, fields[k]); });
+    var file = chosen;
+    var xhr = new XMLHttpRequest();
+    uploading = xhr;
+    xhr.open("POST", "/api/uploads?" + params.toString());
+    xhr.setRequestHeader("X-Videotab", "1");  // 画面からの操作の見出し
+    xhr.upload.onprogress = function (e) {
+      if (!e.lengthComputable) return;
+      $("upload-bar").value = Math.round(e.loaded / e.total * 100);
+      $("upload-text").textContent = "送信中 " + sizeText(e.loaded) + " / " + sizeText(e.total);
+    };
+    xhr.upload.onload = function () { $("upload-text").textContent = "動画を確かめています…"; };
+    xhr.onload = function () {
+      var d = null;
+      try { d = JSON.parse(xhr.responseText); } catch (e) { d = null; }
+      if (xhr.status !== 201 || !d || !d.id) {
+        uploadDone((d && d.error) || "送れませんでした（" + xhr.status + "）");
+        return;
+      }
+      uploadDone("");
+      chosen = null;
+      showChosen();
+      $("title").value = "";
+      $("creator").value = "";
+      $("source-url").value = "";
+      if (engine) remember(engine, c.value, true);
+      select(d.id);
+    };
+    // 本文を読む前に断られると、ブラウザには応答より先に通信の切断として見えることがある
+    xhr.onerror = function () { uploadDone("送れませんでした（サーバーに届かないか、途中で断られました。ファイルの形式と大きさを確かめてください）"); };
+    xhr.onabort = function () { uploadDone("送信を中止しました"); };
+    $("upload-bar").value = 0;
+    $("upload-text").textContent = "送信を始めます…";
+    $("upload").hidden = false;
+    xhr.send(file);
+  });
+
+  refresh();
+})();
+</script>
+</body>
+</html>
