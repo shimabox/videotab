@@ -7,6 +7,9 @@ POST /api/uploads は、本文に動画の生のバイト列を受け取る（�
 本文を読む前に、画面からの操作か・大きさ・入力の項目を確かめて断る。本文はメモリに読まず、
 置き場の一時フォルダへ書き写してから取り込む（add.receive）。
 
+POST /api/jobs/<ID>/info は、曲の情報（題名・作成者・元動画のページ）を meta.json・score.json・
+job.json に書き、組み立てより前の段が済んだ曲だけを組み立ての段から組み立て直す（読み取りはしない）。
+
 /files/ は作業フォルダの中のファイル（タブ譜のページなど）を返す。作業フォルダには読み取りの
 エージェントも書けるので、/files/ の応答には CSP の sandbox を付け、画面の iframe にも同じ値の
 sandbox 属性を付ける。allow-same-origin を与えないので、ページは画面とは別の出どころ（opaque
@@ -34,14 +37,15 @@ from pathlib import Path
 from typing import BinaryIO
 from urllib.parse import parse_qs, unquote, urlparse
 
-from videotab import add, agent_settings, inside, notes_md
+from videotab import add, agent_settings, confine, inside, notes_md
 from videotab.agent import DEFAULT_ENGINE, ENGINES, available_engines
-from videotab.build import source_link, video_creator
-from videotab.pipeline import STEP_NAMES, Busy, Job, finished_at
-from videotab.workdir import ID_PATTERN, load_meta, read_json
+from videotab.build import retitle_score, source_link, video_creator
+from videotab.pipeline import STEP_NAMES, Busy, Job, finished_at, rebuildable, retitle
+from videotab.workdir import ID_PATTERN, load_meta, read_json, save_meta, write_json
 
 SERVED_SUFFIXES = {".html", ".png", ".jpg", ".alphatex", ".md"}
-MAX_JSON = 1024 * 1024  # 止める・やり直すの JSON の本文の上限（1 MB）
+MAX_JSON = 1024 * 1024  # 止める・やり直す・曲の情報の JSON の本文の上限（1 MB）
+INFO_KEYS = ("title", "creator", "source_url")  # 曲の情報の本文に必ず入れる項目
 DELETING = ".deleting-"  # 消している途中の曲のフォルダ名の頭（ID_PATTERN に合わないので一覧に出ない）
 # /files/ のページに与える許可。描画と再生（allow-scripts）、ダウンロード、印刷（allow-modals）、
 # 元動画などへのリンク（allow-popups と、開いた先を sandbox にしない allow-popups-to-escape-sandbox）。
@@ -269,7 +273,7 @@ class App:
             # 一覧に出る曲だけ。中身は読まない（JSON が壊れた曲も消せるように）
             if not ((d / "job.json").is_file() or (d / "meta.json").is_file()):
                 raise KeyError(job_id)
-            if self._busy_for_delete(job_id, e.stat(follow_symlinks=False)):
+            if self._busy_folder(job_id, e.stat(follow_symlinks=False)):
                 raise Busy("実行中か順番待ちです")
             with Job(d).hold():
                 gone = self.root / f"{DELETING}{job_id}-{secrets.token_hex(4)}"
@@ -281,11 +285,11 @@ class App:
             raise
         print(f"videotab: {job_id} を消しました", flush=True)
 
-    def _busy_for_delete(self, job_id: str, target: os.stat_result) -> bool:
-        """消す曲が、この画面で実行中・順番待ちか。self.lock を握って呼ぶ。
+    def _busy_folder(self, job_id: str, target: os.stat_result) -> bool:
+        """消す・書き換える曲（フォルダの実体が target）が、この画面で実行中・順番待ちか。self.lock を握って呼ぶ。
 
         大文字と小文字だけが違う ID（同じフォルダを指しうる）と、リンク経由で順番待ちに入った
-        同じフォルダも、消さない側に倒す。
+        同じフォルダも、実行中・順番待ちの側に倒す。
         """
         ids = [*([self.running] if self.running else []), *self.waiting]
         if any(i.casefold() == job_id.casefold() for i in ids):
@@ -298,6 +302,56 @@ class App:
             if (st.st_dev, st.st_ino) == (target.st_dev, target.st_ino):
                 return True
         return False
+
+    def edit(self, job_id: str, title: str | None, creator: str | None, source_url: str | None) -> bool:
+        """曲の情報（題名・作成者・元動画のページ）を書き換える。組み立て直すために順番待ちに入れたら True。
+
+        入力の誤りは ValueError（add.NotVideo を含む）、曲でなければ KeyError、実行中・順番待ち・
+        job.lock を握れないときは Busy、meta.json / score.json / job.json を読めない・書けないときは
+        InfoError。題名が空なら、元の動画のファイル名（拡張子を除く）に、それも使えなければ ID にする。
+
+        入力は排他の外で確かめ、確認・書き換え・登録は self.lock と job.lock を握って行う。3 つの
+        ファイルは読み手がリンクなどに差し替えられるので、リンクをたどらずに読み、合わなければ何も
+        書かずに断る。書く順は score.json → meta.json → job.json で、途中で失敗したら順番待ちには
+        入れない（同じ内容で保存し直せば揃う）。組み立て直すのは、組み立てより前の段が済んだ曲だけ
+        （pipeline.rebuildable）。
+        """
+        for key, value in (("title", title), ("creator", creator), ("source_url", source_url)):
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"{key} は文字列か null にしてください")
+        new_title = add.check_text("題名", title)
+        new_creator = add.check_text("作成者", creator)
+        new_link = add.check_link(source_url)
+        with self.lock:
+            self._folder(job_id)
+            d = self.root / job_id
+            if not (os.path.lexists(d / "job.json") or os.path.lexists(d / "meta.json")):
+                raise KeyError(job_id)  # 一覧に出る曲だけ
+            if self._busy(job_id) or self._busy_folder(job_id, os.stat(d)):
+                raise Busy("実行中か順番待ちです")
+            job = Job(d)
+            with job.hold():
+                meta = _read_own_json(d, "meta.json")
+                score = _read_own_json(d, "score.json")
+                data = _read_own_json(d, "job.json")
+                old_meta = dict(meta or {})
+                meta = meta or {}
+                name = new_title or file_title(meta) or job_id
+                meta.update(title=name, creator=new_creator, source_url=new_link)
+                rebuilt = False
+                try:
+                    if score is not None:
+                        new_score = retitle_score(score, title=name, creator=new_creator, old_meta=old_meta)
+                        write_json(d / "score.json", new_score, root=confine.root_of(d), notify=job.log)
+                    save_meta(d, meta, notify=job.log)
+                    if data is not None:
+                        rebuilt = retitle(data, name)
+                        job.save(data)
+                except (OSError, ValueError, SystemExit) as e:
+                    raise InfoError(f"曲の情報を書き込めませんでした（{inside.reason(e)}）") from None
+            if rebuilt:
+                self._enqueue_locked(job_id)  # job.lock を放してから（実行は self.lock を放すまで始まらない）
+        return rebuilt
 
     # --- 見せるための情報
 
@@ -355,6 +409,9 @@ class App:
             # meta.json は読み手も書けるので、出すときに検査し直す（https のリンクだけ）
             "source_url": source_link(meta),
             "creator": video_creator(meta),
+            # 曲の情報の欄で、題名を空にしたときに戻る名前（無ければ null）と、保存で組み立て直すか
+            "source_stem": file_title(meta),
+            "rebuildable": rebuildable(data),
             "engine": engine,
             "choice": agent_settings.shown_choice(engine, data.get("choice")),
             "status": status,
@@ -402,6 +459,60 @@ class App:
             if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
                 return None
             return target, f.read()
+
+
+class InfoError(RuntimeError):
+    """曲の情報を書き換えるときに、meta.json / score.json / job.json を読めない・書けない。文言は画面に出す。
+
+    壊れた JSON の例外（json.JSONDecodeError は ValueError）を、入力の誤り（400）と取り違えないために分ける。
+    """
+
+
+def _read_own_json(workdir: Path, name: str) -> dict | None:
+    """作業フォルダの直下の name を、リンクをたどらずに開いて読んだ表。無ければ None。
+
+    リンク（中を指すものも）・FIFO などの通常のファイルでないもの・ほかの名前と中身を共有するもの
+    （外のファイルとのハードリンク）・JSON として読めないもの・表でないものは InfoError。外の中身を
+    読んで作業フォルダの中へ書き写さないよう、確かめた fd から読む。
+    """
+    try:
+        fd = os.open(workdir / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    except OSError as e:  # リンク（ELOOP）など
+        if os.path.islink(workdir / name):
+            raise InfoError(f"{name} がリンクなので、曲の情報を書き換えられません") from None
+        raise InfoError(f"{name} を読めません（{inside.reason(e)}）") from None
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            raise InfoError(f"{name} が通常のファイルではないので、曲の情報を書き換えられません")
+        try:
+            raw = f.read()
+        except OSError as e:
+            raise InfoError(f"{name} を読めません（{inside.reason(e)}）") from None
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except ValueError:  # 壊れた JSON（JSONDecodeError）と、UTF-8 として読めないもの
+        raise InfoError(f"{name} が JSON として読めないので、曲の情報を書き換えられません") from None
+    if not isinstance(data, dict):
+        raise InfoError(f"{name} の形が違う（表ではない）ので、曲の情報を書き換えられません")
+    return data
+
+
+def file_title(meta: dict) -> str | None:
+    """題名を空にしたときの題名: 元の動画のファイル名（拡張子を除く）。
+
+    meta.json の source_file は読み手も書き換えられるので、取り込み時と同じ検査（add.check_text）に
+    通す。無い・文字列でない・空・検査に落ちるときは None（呼び出し側が ID にする）。
+    """
+    source = meta.get("source_file")
+    if not isinstance(source, str):
+        return None
+    try:
+        return add.check_text("題名", Path(Path(source).name).stem)
+    except ValueError:
+        return None
 
 
 def _size_text(n: int) -> str:
@@ -525,8 +636,10 @@ def make_handler(app: App):
             path = parsed.path
             if path == "/api/uploads":
                 return self._upload(parse_qs(parsed.query))
-            if path.startswith("/api/jobs/") and path.endswith(("/cancel", "/retry")):
-                return self._job_action(path)
+            if path.startswith("/api/jobs/"):
+                for action in ("cancel", "retry", "info"):
+                    if path.endswith(f"/{action}"):
+                        return self._job_action(path, action)
             return self._error(404, "ありません")
 
         def _upload(self, query: dict[str, list[str]]):
@@ -549,7 +662,8 @@ def make_handler(app: App):
                 return self._error(500, f"取り込めませんでした（{inside.reason(e)}）")
             return self._json({"id": job_id}, 201)
 
-        def _job_action(self, path: str):
+        def _job_action(self, path: str, action: str):
+            """曲への操作（cancel: 止める、retry: やり直す、info: 曲の情報を書き換える）。本文は JSON。"""
             length = self._length(MAX_JSON, required=False)
             if isinstance(length, tuple):
                 return self._error(*length)
@@ -559,25 +673,33 @@ def make_handler(app: App):
                 return self._error(400, "JSON が読めません")
             if not isinstance(body, dict):
                 return self._error(400, "JSON の形が違います")
-            action = "cancel" if path.endswith("/cancel") else "retry"
             job_id = path.removeprefix("/api/jobs/").removesuffix(f"/{action}")
             if not ID_PATTERN.match(job_id):
                 return self._error(404, "ありません")
+            result = {"id": job_id}
             try:
                 if action == "cancel":
                     app.cancel(job_id)
-                else:
+                elif action == "retry":
                     fields = {k: body[k] for k in ("model", "effort") if k in body}
                     app.retry(job_id, body.get("step"), body.get("engine"), fields)
+                elif action == "info":
+                    # 欠けた項目を空として扱うと、一部だけの本文で値が消えるので、すべて求める
+                    missing = [k for k in INFO_KEYS if k not in body]
+                    if missing:
+                        raise ValueError(f"{'・'.join(missing)} がありません")
+                    result["rebuilt"] = app.edit(job_id, body["title"], body["creator"], body["source_url"])
             except Busy as e:
                 return self._error(409, str(e))
             except KeyError:
                 return self._error(404, "ありません")
+            except InfoError as e:
+                return self._error(500, str(e))
             except ValueError as e:
                 return self._error(400, str(e))
             except (Exception, SystemExit) as e:  # noqa: BLE001 - job.json を書けないなどを画面に返す
                 return self._error(500, f"{type(e).__name__}: {e}")
-            return self._json({"id": job_id})
+            return self._json(result)
 
         def do_DELETE(self):
             if not self._from_page():

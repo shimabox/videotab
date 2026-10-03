@@ -174,6 +174,28 @@
   .actions.retry { flex-direction: column; align-items: stretch; }
   .actions .retry-main { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 
+  /* 曲の情報（題名・作成者・元動画のページ）。3 つの欄を横に並べ、狭い幅では縦に積む */
+  /* .actions の折り返しを残すと、欄の行の高さを折り返したときの高さで見積もり、保存ボタンとの間が空く */
+  .actions.info { flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 6px; }
+  .info-title { font-size: 0.8rem; color: var(--muted); font-weight: 600; letter-spacing: 0.04em; }
+  .info-fields { display: flex; flex-wrap: wrap; gap: 10px; }
+  .info-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 200px; }
+  .info-field.wide { flex-basis: 320px; }
+  .info-field label { display: flex; flex-direction: column; gap: 3px; font-size: 0.8rem; color: var(--muted); }
+  .info-field input {
+    font: inherit; font-size: 0.88rem; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--panel); color: var(--ink); min-width: 0;
+  }
+  .info-field input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .info-field input[aria-invalid=true] { border-color: var(--bad); }
+  .info-hint { font-size: 0.76rem; color: var(--muted); min-height: 1.2em; overflow-wrap: anywhere; }
+  .info-hint.bad { color: var(--bad); }
+  .info-buttons { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .info-msg { font-size: 0.82rem; color: var(--muted); }
+  .info-msg.bad { color: var(--bad); }
+  .p-edit > p.info-msg { margin: 12px 0 0; }
+  @media (max-width: 560px) { .info-field, .info-field.wide { flex-basis: 100%; } }
+
   button.del-outline {
     color: var(--bad); border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); background: var(--panel);
     font-size: 0.8rem; padding: 4px 11px; margin-left: auto;
@@ -276,6 +298,8 @@
   // { id, step, engine, picks: { エンジン: モデルと推論の強さの欄の状態 } }: 行を作り直すときの初期値
   var retryChoice = {};
   var retryRow = null;  // やり直しの行（同じ曲・同じ状態の間は同じ DOM を使う）
+  var infoRow = null;  // 曲の情報の行（同じ曲・同じ状態の間は同じ DOM を使う）
+  var infoNotice = null;  // 曲の情報を保存した結果の文（{ id, text, rebuilt, seenBusy }）
   var shownResult = null;  // いま表示しているタブ譜（id と html）。同じなら iframe を作り直さない
   var OPTIONS = null;  // GET /api/jobs の agent_options（選択肢と普段の値）
   var newPicker = null;  // 新規フォームのモデルと推論の強さの欄（更新では作り直さない）
@@ -584,6 +608,133 @@
     return box;
   }
 
+  // --- 曲の情報
+  // 題名・作成者・元動画のページの欄。やり直しの行と同じく、同じ曲・同じ状態の間は作り直さない
+  // （入力中の文字・フォーカスを保つ）。保存したら行を作り直し、保存済みの値から始める
+
+  function infoField(label, attrs, wide) {
+    var input = el("input", attrs);
+    var hint = el("span", { class: "info-hint", "aria-live": "polite" });
+    return { input: input, hint: hint, el: el("div", { class: "info-field" + (wide ? " wide" : "") }, [
+      el("label", {}, [el("span", { text: label }), input]), hint
+    ]) };
+  }
+  function infoHints(row) {
+    var stem = row.job.source_stem;
+    row.title.hint.textContent = row.title.input.value.trim() ? "" :
+      "空なら" + (stem ? "ファイル名（" + stem + "）" : "ファイル名");
+    row.creator.hint.textContent = row.creator.input.value.trim() ? "" : "空なら楽譜に出ません";
+  }
+  function setLinkError(row, message) {
+    row.link.hint.textContent = message;
+    row.link.hint.classList.toggle("bad", !!message);
+    row.link.input.setAttribute("aria-invalid", message ? "true" : "false");
+  }
+  // 入力を保存済みの値（detail が返した値。source_url は https のものだけ）に戻す
+  function fillInfo(row) {
+    var d = row.job;
+    row.title.input.value = d.title || "";
+    row.creator.input.value = d.creator || "";
+    row.link.input.value = d.source_url || "";
+    setLinkError(row, "");
+    infoHints(row);
+  }
+  function updateInfoRow(row, d) {
+    row.job = d;
+    row.save.textContent = d.rebuildable ? "保存してタブ譜に反映" : "保存する";
+    row.save.disabled = row.saving;
+    infoHints(row);
+  }
+  // 保存の結果の文。組み立て直すときは、組み立てが終わるまで出す
+  function infoNoticeText(d) {
+    var n = infoNotice;
+    if (!n || n.id !== d.id) return "";
+    if (n.rebuilt) {
+      if (d.status === "running" || d.status === "queued") n.seenBusy = true;
+      else if (n.seenBusy) { infoNotice = null; return ""; }
+    }
+    return n.text;
+  }
+
+  function saveInfo(row) {
+    if (row.saving) return;
+    // 元動画のページは、空なら null として送る。空でないときだけ形を確かめる
+    var link = row.link.input.value.trim();
+    if (link && !/^https:\/\/\S+$/.test(link)) {
+      setLinkError(row, "https:// で始まる URL にしてください");
+      row.link.input.focus();
+      return;
+    }
+    var id = row.job.id;  // 送ったときの曲（返事を待つ間に選択が変わっても取り違えない）
+    var creator = row.creator.input.value.trim();
+    row.saving = true;
+    row.save.disabled = true;
+    row.msg.className = "info-msg";
+    row.msg.textContent = "";
+    api("/api/jobs/" + encodeURIComponent(id) + "/info", { title: row.title.input.value.trim(), creator: creator || null, source_url: link || null })
+      .then(function (r) {
+        infoNotice = { id: id, rebuilt: !!r.rebuilt, seenBusy: false,
+          text: r.rebuilt ? "保存しました。タブ譜に反映しています（読み取りはやり直しません）"
+            : "保存しました。タブ譜には、続きを実行して組み立てたときに出ます" };
+        if (infoRow === row) infoRow = null;  // 保存済みの値で行を作り直す
+        return refresh();
+      }, function (e) {
+        row.saving = false;
+        row.save.disabled = false;
+        row.msg.className = "info-msg bad";
+        row.msg.textContent = e.status ? e.message : "サーバーに届きません: " + e.message;
+      });
+  }
+
+  function buildInfoRow(d, key) {
+    var row = { key: key, job: d, saving: false };
+    row.title = infoField("題名", { type: "text", maxlength: "200" });
+    row.creator = infoField("動画の作成者（任意）", { type: "text", maxlength: "200" });
+    row.link = infoField("元動画のページ（任意、https のみ）", { type: "text", maxlength: "2000", inputmode: "url",
+      autocomplete: "off", spellcheck: "false", placeholder: "https://example.com/..." }, true);
+    row.save = el("button", { type: "submit", class: "primary" });
+    row.msg = el("span", { class: "info-msg", "aria-live": "polite" });
+    var reset = el("button", { type: "button", text: "元に戻す", onclick: function () {
+      fillInfo(row);
+      if (infoNotice && infoNotice.id === row.job.id) infoNotice = null;
+      row.msg.className = "info-msg";
+      row.msg.textContent = "";
+    } });
+    row.title.input.addEventListener("input", function () { infoHints(row); });
+    row.creator.input.addEventListener("input", function () { infoHints(row); });
+    row.link.input.addEventListener("input", function () { setLinkError(row, ""); });
+    row.el = el("form", { class: "actions info", novalidate: "novalidate",
+      onsubmit: function (ev) { ev.preventDefault(); saveInfo(row); } }, [
+      el("span", { class: "info-title", text: "曲の情報" }),
+      el("div", { class: "info-fields" }, [row.title.el, row.creator.el, row.link.el]),
+      el("div", { class: "info-buttons" }, [row.save, reset, row.msg])
+    ]);
+    fillInfo(row);
+    updateInfoRow(row, d);
+    return row;
+  }
+
+  // 曲の情報の欄を出す・保つ。出すのは実行中・順番待ち以外（「この曲を消す」と同じ条件）
+  function renderInfo(area, d) {
+    var show = d.status !== "running" && d.status !== "queued";
+    var key = show ? d.id + "|" + d.status : null;
+    var notice = infoNoticeText(d);
+    if (!infoRow || infoRow.key !== key) {
+      area.textContent = "";
+      infoRow = null;
+      if (show) {
+        infoRow = buildInfoRow(d, key);
+        area.appendChild(infoRow.el);
+      } else if (notice) {
+        area.appendChild(el("p", { class: "info-msg", text: notice }));
+      }
+    } else {
+      updateInfoRow(infoRow, d);
+    }
+    // エラーを出している間は、結果の文で上書きしない
+    if (infoRow && !infoRow.saving && infoRow.msg.className === "info-msg") infoRow.msg.textContent = notice;
+  }
+
   // --- 一覧と詳細
 
   var AVAILABLE = {};
@@ -638,21 +789,22 @@
   }
 
   // #detail の中は、進み具合とタブ譜（変わったときだけ作り直す）に分ける。進み具合のうち、
-  // 見出し・段・報告・ログは更新のたびに作り直し、やり直しの行は同じ曲・同じ状態の間は保つ
+  // 見出し・段・報告・ログは更新のたびに作り直し、曲の情報とやり直しの行は同じ曲・同じ状態の間は保つ
   function areas() {
     var box = $("detail");
     var progress = box.querySelector(":scope > .progress-area");
     if (!progress) {
       box.textContent = "";
       retryRow = null;
+      infoRow = null;
       progress = el("div", { class: "progress-area" }, [el("div", { class: "panel" }, [
-        el("div", { class: "p-top" }), el("div", { class: "p-retry" }), el("div", { class: "p-bottom" })
+        el("div", { class: "p-top" }), el("div", { class: "p-edit" }), el("div", { class: "p-retry" }), el("div", { class: "p-bottom" })
       ])]);
       box.appendChild(progress);
       box.appendChild(el("div", { class: "result-area" }));
     }
     return {
-      top: progress.querySelector(".p-top"), retry: progress.querySelector(".p-retry"),
+      top: progress.querySelector(".p-top"), edit: progress.querySelector(".p-edit"), retry: progress.querySelector(".p-retry"),
       bottom: progress.querySelector(".p-bottom"), result: box.querySelector(":scope > .result-area")
     };
   }
@@ -800,6 +952,7 @@
     top.appendChild(head);
     top.appendChild(sub);
     top.appendChild(steps);
+    renderInfo(area.edit, d);
 
     // やり直しの行は、同じ曲・同じ状態の間は作り直さない（入力中の文字・フォーカス・開いた select を保つ）
     var showRow = d.status !== "running" && d.status !== "queued" && d.steps.length > 0;
@@ -879,6 +1032,8 @@
     shownResult = null;
     retryChoice = {};
     retryRow = null;
+    infoRow = null;
+    infoNotice = null;
     $("detail").innerHTML = WELCOME;
     Array.prototype.forEach.call($("jobs").querySelectorAll("button[aria-current]"), function (b) { b.setAttribute("aria-current", "false"); });
     history.replaceState(null, "", location.pathname + location.search);
@@ -894,6 +1049,8 @@
     shownResult = null;
     retryChoice = {};
     retryRow = null;
+    infoRow = null;
+    infoNotice = null;
     var box = $("detail");
     box.textContent = "";
     history.replaceState(null, "", "#" + encodeURIComponent(id));
