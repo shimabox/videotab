@@ -34,10 +34,11 @@ STEPS = [
     ("strip", "帯と線の検出"),
     ("pages", "ページ分け"),
     ("read", "読み取り"),
-    ("build", "組み立て"),
+    ("build", "タブ譜の組み立て"),
     ("verify", "時刻の照合"),
 ]
 STEP_NAMES = [name for name, _ in STEPS]
+STEP_LABELS = dict(STEPS)
 REBUILD_FROM = "build"  # 曲の情報を書き換えたとき、組み立て直す最初の段（ここから後はエージェントを使わない）
 
 _file_lock = threading.Lock()
@@ -65,6 +66,25 @@ def finished_at(data: dict) -> str | None:
     return max(ends) if ends else None
 
 
+def step_label(step: dict) -> str | None:
+    """段の表示名。name が STEPS にあれば今の表示名、無ければ job.json に保存された label。
+
+    job.json の label は曲を作ったときの表示名なので、あとで表示名を変えた段も今の名前で出すため。
+    """
+    name = step.get("name")
+    if isinstance(name, str) and name in STEP_LABELS:
+        return STEP_LABELS[name]
+    return step.get("label")
+
+
+def shown_steps(data: dict) -> list:
+    """画面に出す段の一覧。各段の label を step_label にそろえる（job.json は書き換えない）。"""
+    steps = data.get("steps") or []
+    if not isinstance(steps, list):
+        return steps
+    return [{**s, "label": step_label(s)} if isinstance(s, dict) else s for s in steps]
+
+
 def has_steps(data: dict) -> bool:
     """job.json の内容 data の段の名前の並びが、STEPS とちょうど同じ（欠け・余分・順序違いが無い）か。"""
     steps = data.get("steps") if isinstance(data, dict) else None
@@ -74,9 +94,9 @@ def has_steps(data: dict) -> bool:
 
 
 def rebuildable(data: dict) -> bool:
-    """組み立ての段から組み立て直せる曲か。
+    """タブ譜の組み立ての段から組み立て直せる曲か。
 
-    段の一覧が STEPS と同じ（has_steps）で、組み立てより前の段がすべて済んでいるときだけ。
+    段の一覧が STEPS と同じ（has_steps）で、タブ譜の組み立てより前の段がすべて済んでいるときだけ。
     そうでない曲を順番待ちに入れると、読み取りが走るおそれがあるため。
     """
     if not has_steps(data):
@@ -85,8 +105,8 @@ def rebuildable(data: dict) -> bool:
 
 
 def retitle(data: dict, title: str) -> bool:
-    """読んだ job.json の内容 data の題名を書き換え、組み立て直せる曲なら組み立て以降の段を未実行に
-    戻して順番待ちの状態にする。戻したら True。保存は呼び出し側（Job.save）が行う。"""
+    """読んだ job.json の内容 data の題名を書き換え、組み立て直せる曲ならタブ譜の組み立て以降の段を
+    未実行に戻して順番待ちの状態にする。戻したら True。保存は呼び出し側（Job.save）が行う。"""
     data["title"] = title
     if not rebuildable(data):
         return False
@@ -388,7 +408,7 @@ class Job:
                 continue
             name = step["name"]
             self.update_step(name, status="running", started=now(), ended=None, message=None)
-            self.log(f"== {step['label']}")
+            self.log(f"== {step_label(step)}")
             t0 = time.monotonic()
             try:
                 self.cancel.check()

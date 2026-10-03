@@ -109,7 +109,7 @@ def test_edit_rewrites_three_files_and_rebuilds(served):
     ((name, queued),) = s.ran
     assert name == JOB and queued["status"] == "queued" and queued["title"] == "新しい題名"
     i = pipeline.STEP_NAMES.index("build")
-    assert queued["steps"][:i] == before["steps"][:i]  # 組み立てより前の段の状態・時刻は変えない
+    assert queued["steps"][:i] == before["steps"][:i]  # タブ譜の組み立てより前の段の状態・時刻は変えない
     assert [(x["name"], x["status"], x["started"], x["ended"]) for x in queued["steps"][i:]] == [
         ("build", "pending", None, None), ("verify", "pending", None, None)]  # fmt: skip
     jobs = json.loads(call(s.base + "/api/jobs")[1])["jobs"]

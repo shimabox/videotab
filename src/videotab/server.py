@@ -8,7 +8,8 @@ POST /api/uploads は、本文に動画の生のバイト列を受け取る（�
 置き場の一時フォルダへ書き写してから取り込む（add.receive）。
 
 POST /api/jobs/<ID>/info は、曲の情報（題名・作成者・元動画のページ）を meta.json・score.json・
-job.json に書き、組み立てより前の段が済んだ曲だけを組み立ての段から組み立て直す（読み取りはしない）。
+job.json に書き、タブ譜の組み立てより前の段が済んだ曲だけをタブ譜の組み立ての段から組み立て直す
+（読み取りはしない）。
 
 /files/ は作業フォルダの中のファイル（タブ譜のページなど）を返す。作業フォルダには読み取りの
 エージェントも書けるので、/files/ の応答には CSP の sandbox を付け、画面の iframe にも同じ値の
@@ -40,7 +41,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from videotab import add, agent_settings, confine, inside, notes_md
 from videotab.agent import DEFAULT_ENGINE, ENGINES, available_engines
 from videotab.build import retitle_score, source_link, video_creator
-from videotab.pipeline import STEP_NAMES, Busy, Job, finished_at, rebuildable, retitle
+from videotab.pipeline import STEP_NAMES, Busy, Job, finished_at, rebuildable, retitle, shown_steps
 from videotab.workdir import ID_PATTERN, load_meta, read_json, save_meta, write_json
 
 SERVED_SUFFIXES = {".html", ".png", ".jpg", ".alphatex", ".md"}
@@ -313,8 +314,8 @@ class App:
         入力は排他の外で確かめ、確認・書き換え・登録は self.lock と job.lock を握って行う。3 つの
         ファイルは読み手がリンクなどに差し替えられるので、リンクをたどらずに読み、合わなければ何も
         書かずに断る。書く順は score.json → meta.json → job.json で、途中で失敗したら順番待ちには
-        入れない（同じ内容で保存し直せば揃う）。組み立て直すのは、組み立てより前の段が済んだ曲だけ
-        （pipeline.rebuildable）。
+        入れない（同じ内容で保存し直せば揃う）。組み立て直すのは、タブ譜の組み立てより前の段が済んだ
+        曲だけ（pipeline.rebuildable）。
         """
         for key, value in (("title", title), ("creator", creator), ("source_url", source_url)):
             if value is not None and not isinstance(value, str):
@@ -416,7 +417,8 @@ class App:
             "choice": agent_settings.shown_choice(engine, data.get("choice")),
             "status": status,
             "stopping": status == "running" and self._stopping(job_id),
-            "steps": data.get("steps") or [],
+            # job.json の label は作ったときの表示名なので、段の name から今の表示名にして出す
+            "steps": shown_steps(data),
             "created": data.get("created"),
             "updated": data.get("updated"),
             # 画面に出す状態が終わった（done / failed）ときだけ。実行中・順番待ちに変わった曲では出さない

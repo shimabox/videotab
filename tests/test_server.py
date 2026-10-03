@@ -176,6 +176,24 @@ def test_detail_finished_is_null_unless_finished(app, case):
     assert detail["finished"] is None
 
 
+# --- 段の表示名
+
+
+def test_detail_shows_current_step_labels_for_old_job_json(app):
+    job = saved_job(app.root)
+    data = job.load()
+    for s in data["steps"]:
+        if s["name"] == "build":
+            s["label"] = "組み立て"  # 表示名を変える前に作った曲
+    data["steps"].append({"name": "extra", "label": "手で足した段", "status": "pending"})
+    job.save(data)
+    saved = job.path.read_text(encoding="utf-8")
+    steps = app.detail("abcdefghijk")["steps"]
+    assert [s["label"] for s in steps] == [lb for _, lb in pipeline.STEPS] + ["手で足した段"]
+    assert steps[pipeline.STEP_NAMES.index("build")]["label"] == "タブ譜の組み立て"
+    assert job.path.read_text(encoding="utf-8") == saved  # job.json は書き換えない
+
+
 # --- 読み手の報告
 
 

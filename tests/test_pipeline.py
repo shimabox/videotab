@@ -85,7 +85,7 @@ def done_job(status="done"):
 
 def test_rebuild_starts_at_build_step():
     assert pipeline.REBUILD_FROM in pipeline.STEP_NAMES
-    assert dict(pipeline.STEPS)[pipeline.REBUILD_FROM] == "組み立て"
+    assert dict(pipeline.STEPS)[pipeline.REBUILD_FROM] == "タブ譜の組み立て"
     after = pipeline.STEP_NAMES[pipeline.STEP_NAMES.index(pipeline.REBUILD_FROM) :]
     assert after == ["build", "verify"]  # 読み取りは含まない
 
@@ -96,7 +96,7 @@ def test_retitle_resets_build_and_after_when_earlier_steps_are_done():
     assert pipeline.retitle(data, "新しい題名") is True
     assert data["title"] == "新しい題名" and data["status"] == "queued"
     i = pipeline.STEP_NAMES.index("build")
-    assert data["steps"][:i] == before["steps"][:i]  # 組み立てより前の段の状態・時刻は変えない
+    assert data["steps"][:i] == before["steps"][:i]  # タブ譜の組み立てより前の段の状態・時刻は変えない
     for s in data["steps"][i:]:
         assert (s["status"], s["started"], s["ended"], s["message"]) == ("pending", None, None, None)
 
@@ -427,17 +427,21 @@ def test_videotab_run_step_keeps_records_of_earlier_steps(tmp_path, monkeypatch)
     data = job.load()
     for s in data["steps"][5:]:  # 組み立て直したと分かるように、前の実行の記録を古くしておく
         s.update(started="2000-01-01T00:00:00", ended="2000-01-01T00:00:01", message="古い記録", seconds=999)
+    data["steps"][5]["label"] = "組み立て"  # 表示名を変える前に作った曲
     job.save(data)
     before = job.load()
 
     def no_agent(*args, **kwargs):
-        raise AssertionError("組み立てからのやり直しでエージェントを起動しない")
+        raise AssertionError("タブ譜の組み立てからのやり直しでエージェントを起動しない")
 
     monkeypatch.setattr(read, "run_agent", no_agent)
     assert cli.main(["run", job.workdir.name, "--root", str(job.workdir.parent), "--step", "build"]) == 0
     after = job.load()
     assert after["steps"][:5] == before["steps"][:5]  # 読み取りまでの時刻・所要時間・結果はそのまま
     assert "実際のモデル claude-opus-5-5" in after["steps"][4]["message"]
+    log = job.log_tail(1000)
+    assert any(line.endswith(" == タブ譜の組み立て") for line in log)  # ログの見出しは今の表示名
+    assert not any(line.endswith(" == 組み立て") for line in log)
     for s in after["steps"][5:]:
         assert s["status"] == "done" and s["message"] != "古い記録" and s["started"] != "2000-01-01T00:00:00"
         assert s["seconds"] != 999
