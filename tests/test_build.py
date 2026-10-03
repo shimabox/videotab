@@ -156,6 +156,28 @@ def test_mute_key_reaches_keydown_even_when_a_button_has_focus(tmp_path):
     assert keydown.index("KeyM") < keydown.index('tag === "BUTTON"')
 
 
+def test_follow_key_is_judged_like_the_mute_key(tmp_path):
+    wd = setup_work(tmp_path)
+    write(wd / "parts" / "part_A.json", {"1": "r.1"})
+    assert build.run_build(wd) == 0
+    html = (wd / "song.html").read_text(encoding="utf-8")
+    keydown = html[html.index('addEventListener("keydown"'):]
+    keydown = keydown[: keydown.index("});") + 3]
+    # S も M と同じく KeyS か s / S で判定し、入力欄では効かない。
+    key_s = 'if (!typing && (e.code === "KeyS" || e.key === "s" || e.key === "S")) {'
+    assert key_s in keydown
+    at = keydown.index(key_s)
+    # 押しっぱなしの繰り返しと修飾キー付きは、S の判定より前に外す。
+    assert keydown.index("if (e.repeat) { return; }") < at
+    assert keydown.index("if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) { return; }") < at
+    assert keydown.index('var typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT"') < at
+    assert "target.isContentEditable" in keydown[:at]
+    # BUTTON の除外（focus が残ったボタンの上）より前に判定する。
+    assert at < keydown.index('tag === "BUTTON"')
+    body = keydown[at:].split("return;")[0]
+    assert "e.preventDefault();" in body and "setFollow(!follow);" in body
+
+
 def test_retitle_score_replaces_title_tab_by_and_default_subtitle():
     score = {"title": "Song", "subtitle": "Old さんの動画のタブ譜から書き起こし", "tab_by": "Old", "tempo": 137,
              "tuning": "d4 a3 f3 c3 g2 c2", "capo": 2}  # fmt: skip
@@ -300,14 +322,25 @@ def test_rendered_page_draws_playback_buttons_as_icons():
 
 
 def test_rendered_page_toggles_follow_with_a_button():
-    # 自動スクロールはトグルのボタン。既定はオンで、選択は記憶する。
+    # 自動スクロールはトグルのボタン。既定はオンで、選択は記憶する。S キーでも切り替えられる。
     html = render_html("r.1", title="t", tempo=100, tuning="e4 b3 g3 d3 a2 e2")
     controls = controls_html(html)
     follow = button_tag(controls, "tm-follow")
     assert 'aria-pressed="true"' in follow and 'aria-label="自動スクロール"' in follow
-    assert 'title="再生位置を追って楽譜を自動でスクロールする"' in follow
+    assert 'title="再生位置を追って楽譜を自動でスクロールする（S）"' in follow and 'aria-keyshortcuts="S"' in follow
+    keys = controls.split('<span class="tm-keys">')[1].split("</span>")[0]
+    assert keys == "Space: 再生 / 一時停止　Esc: 停止　S: 自動スクロール　M: ミュート"
     assert 'type="checkbox"' not in controls
     assert '"videotab.follow-playback"' in html
+
+
+def test_key_hints_follow_button_order():
+    # キー操作の案内は、1 段目のボタンと同じ順（自動スクロール → ミュート）に並べる。
+    html = render_html("r.1", title="t", tempo=100, tuning="e4 b3 g3 d3 a2 e2")
+    controls = controls_html(html)
+    assert controls.index('id="tm-follow"') < controls.index('id="tm-mute"')
+    keys = controls.split('<span class="tm-keys">')[1].split("</span>")[0]
+    assert keys.index("S: 自動スクロール") < keys.index("M: ミュート")
 
 
 def toggle_html(controls, button_id):
@@ -359,7 +392,7 @@ def test_rendered_page_fills_toggles_in_their_usual_state():
 
 
 def test_rendered_page_updates_toggles_through_one_function():
-    # 読み込み時の記憶・クリック・M キーのどれでも、同じ処理でボタンの表示を変える。
+    # 読み込み時の記憶・クリック・M / S キーのどれでも、同じ処理でボタンの表示を変える。
     html = render_html("r.1", title="t", tempo=100, tuning="e4 b3 g3 d3 a2 e2")
     script = html.split('id="tm-alphatab-lib"')[1].split("</script>")[1]
     assert 'function showToggle(button, on) {\n    button.setAttribute("aria-pressed", String(on));' in script
@@ -367,8 +400,17 @@ def test_rendered_page_updates_toggles_through_one_function():
     load_follow = script.index("showToggle(followEl, follow);")
     assert load_follow < script.index("function keepPlayingBarVisible()")
     assert script.index("showToggle(muteEl, muted);") < script.index("function reserveRoomForControls()")
+    # 自動スクロールは、クリックと S キーが同じ setFollow を通り、表示・記憶・オンにしたときの
+    # スクロールをまとめて行う。
+    set_follow = script.split("function setFollow(value) {")[1].split("\n  }")[0]
+    assert "showToggle(followEl, value);" in set_follow
+    assert 'window.localStorage.setItem(FOLLOW_KEY, value ? "on" : "off")' in set_follow
+    assert "keepPlayingBarVisible();" in set_follow
+    assert script.count("localStorage.setItem(FOLLOW_KEY") == 1
     click_follow = script.split('followEl.addEventListener("click", function () {')[1].split("});")[0]
-    assert "showToggle(followEl, follow);" in click_follow
+    assert click_follow.strip() == "setFollow(!follow);"
+    key_s = script.split('e.code === "KeyS"')[1].split("return;")[0]
+    assert "setFollow(!follow);" in key_s
     set_muted = script.split("function setMuted(value) {")[1].split("}")[0]
     assert "showToggle(muteEl, value);" in set_muted
     click_mute = script.split('muteEl.addEventListener("click", function () {')[1].split("});")[0]

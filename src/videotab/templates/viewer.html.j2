@@ -232,13 +232,13 @@
     <span class="tm-playback">
       <button type="button" id="tm-play" class="tm-btn tm-icon-btn" disabled aria-label="再生" title="再生 / 一時停止（Space）" aria-keyshortcuts="Space"><svg class="tm-icon-play" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 2.5v11l9.5-5.5z" fill="currentColor"/></svg><svg class="tm-icon-pause" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="3.5" y="2.5" width="3" height="11" rx="0.5" fill="currentColor"/><rect x="9.5" y="2.5" width="3" height="11" rx="0.5" fill="currentColor"/></svg></button>
       <button type="button" id="tm-stop" class="tm-btn tm-icon-btn" disabled aria-label="停止" title="停止（Esc）" aria-keyshortcuts="Escape"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="3" y="3" width="10" height="10" rx="1" fill="currentColor"/></svg></button>
-      <button type="button" id="tm-follow" class="tm-btn tm-toggle" aria-pressed="true" aria-label="自動スクロール" title="再生位置を追って楽譜を自動でスクロールする"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 2v8.5M4.5 7 8 10.5 11.5 7M3 14h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="tm-state" aria-hidden="true"><span class="tm-state-on">自動スクロール: オン</span><span class="tm-state-off">自動スクロール: オフ</span></span></button>
+      <button type="button" id="tm-follow" class="tm-btn tm-toggle" aria-pressed="true" aria-label="自動スクロール" title="再生位置を追って楽譜を自動でスクロールする（S）" aria-keyshortcuts="S"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 2v8.5M4.5 7 8 10.5 11.5 7M3 14h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="tm-state" aria-hidden="true"><span class="tm-state-on">自動スクロール: オン</span><span class="tm-state-off">自動スクロール: オフ</span></span></button>
       <button type="button" id="tm-mute" class="tm-btn tm-toggle" aria-pressed="false" aria-label="ミュート" title="音を出さずに再生する（M）" aria-keyshortcuts="M"><svg class="tm-icon-on" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2.5 6H5l3.5-3v10L5 10H2.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M11 5.5a3.5 3.5 0 0 1 0 5M1.5 1.5l13 13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg><svg class="tm-icon-off" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2.5 6H5l3.5-3v10L5 10H2.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M11 5.5a3.5 3.5 0 0 1 0 5M12.5 3.5a6 6 0 0 1 0 9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg><span class="tm-state" aria-hidden="true"><span class="tm-state-on">ミュート中</span><span class="tm-state-off">音あり</span></span></button>
       <span id="tm-player-status" class="tm-player-status" aria-live="polite">音源を読み込み中…</span>
     </span>
   </div>
   <div class="tm-controls-row">
-    <span class="tm-keys">Space: 再生 / 一時停止　Esc: 停止　M: ミュート</span>
+    <span class="tm-keys">Space: 再生 / 一時停止　Esc: 停止　S: 自動スクロール　M: ミュート</span>
     <span class="tm-download" role="group" aria-label="ダウンロード">ダウンロード:
       <button type="button" class="tm-btn" data-download="gp" disabled title="Guitar Pro・TuxGuitar・MuseScore などで開ける">Guitar Pro</button>
       <button type="button" class="tm-btn" data-download="midi" disabled>MIDI</button>
@@ -304,6 +304,14 @@
     if (rect.top < 0 || rect.bottom > visibleBottom) {
       window.scrollTo({ top: window.scrollY + rect.top - FOLLOW_MARGIN, behavior: "smooth" });
     }
+  }
+  // The button and the S key both go through here; turning following on
+  // brings the playing bar back into view right away.
+  function setFollow(value) {
+    follow = value;
+    showToggle(followEl, value);
+    try { window.localStorage.setItem(FOLLOW_KEY, value ? "on" : "off"); } catch (e) { /* storage blocked */ }
+    keepPlayingBarVisible();
   }
   // Muting plays silently (cursor and following keep going), e.g. to follow
   // the score while listening to the recording; remembered like following.
@@ -476,10 +484,7 @@
   });
 
   followEl.addEventListener("click", function () {
-    follow = !follow;
-    showToggle(followEl, follow);
-    try { window.localStorage.setItem(FOLLOW_KEY, follow ? "on" : "off"); } catch (e) { /* storage blocked */ }
-    keepPlayingBarVisible();
+    setFollow(!follow);
   });
   muteEl.addEventListener("click", function () {
     setMuted(!muted);
@@ -492,9 +497,9 @@
 
   // Space plays / pauses from anywhere on the page except a focused control
   // (a focused button, toggles included, already reacts to Space itself). Esc
-  // stops wherever the focus is. M toggles the mute even when a button has
-  // focus: clicking ▶ やミュートのボタン leaves the focus on that button, so
-  // the very next M press needs to work there too.
+  // stops wherever the focus is. M toggles the mute and S toggles following
+  // even when a button has focus: clicking ▶ やミュートのボタン leaves the
+  // focus on that button, so the very next M or S press needs to work there too.
   document.addEventListener("keydown", function (e) {
     // a held key repeats keydown; act on the first press only
     if (e.repeat) { return; }
@@ -509,10 +514,15 @@
     var typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (target && target.isContentEditable);
     // e.code (physical key position) keeps working when IME composition makes
     // e.key something other than "m"/"M"; checking it before the BUTTON
-    // exclusion below is what lets M reach the mute right after a click.
+    // exclusion below is what lets M and S reach their toggles right after a click.
     if (!typing && (e.code === "KeyM" || e.key === "m" || e.key === "M")) {
       e.preventDefault();
       setMuted(!muted);
+      return;
+    }
+    if (!typing && (e.code === "KeyS" || e.key === "s" || e.key === "S")) {
+      e.preventDefault();
+      setFollow(!follow);
       return;
     }
     if (tag === "BUTTON" || typing) { return; }
