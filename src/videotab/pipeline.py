@@ -38,6 +38,7 @@ STEPS = [
     ("verify", "時刻の照合"),
 ]
 STEP_NAMES = [name for name, _ in STEPS]
+REBUILD_FROM = "build"  # 曲の情報を書き換えたとき、組み立て直す最初の段（ここから後はエージェントを使わない）
 
 _file_lock = threading.Lock()
 # job.lock はリンクをたどらずに開く（リンクの先を作ったり書き換えたりしない）。
@@ -62,6 +63,37 @@ def finished_at(data: dict) -> str | None:
         return None
     ends = [s["ended"] for s in steps if isinstance(s.get("ended"), str) and s["ended"]]
     return max(ends) if ends else None
+
+
+def rebuildable(data: dict) -> bool:
+    """組み立ての段から組み立て直せる曲か。
+
+    段の名前の並びが STEPS とちょうど同じ（欠け・余分・順序違いが無い）で、組み立てより前の段が
+    すべて済んでいるときだけ。そうでない曲を順番待ちに入れると、読み取りが走るおそれがあるため。
+    """
+    steps = data.get("steps") if isinstance(data, dict) else None
+    if not (isinstance(steps, list) and all(isinstance(s, dict) for s in steps)):
+        return False
+    if [s.get("name") for s in steps] != STEP_NAMES:
+        return False
+    return all(s.get("status") == "done" for s in steps[: STEP_NAMES.index(REBUILD_FROM)])
+
+
+def retitle(data: dict, title: str) -> bool:
+    """読んだ job.json の内容 data の題名を書き換え、組み立て直せる曲なら組み立て以降の段を未実行に
+    戻して順番待ちの状態にする。戻したら True。保存は呼び出し側（Job.save）が行う。"""
+    data["title"] = title
+    if not rebuildable(data):
+        return False
+    _reset_steps(data, REBUILD_FROM)
+    return True
+
+
+def _reset_steps(data: dict, step: str) -> None:
+    """step とそのあとの段を未実行に戻し、順番待ちの状態にする。"""
+    for s in data["steps"][STEP_NAMES.index(step) :]:
+        s.update(status="pending", started=None, ended=None, message=None)
+    data["status"] = "queued"
 
 
 class Job:
@@ -148,10 +180,7 @@ class Job:
         検査済みのもの）。
         """
         data = self.load()
-        i = STEP_NAMES.index(step)
-        for s in data["steps"][i:]:
-            s.update(status="pending", started=None, ended=None, message=None)
-        data["status"] = "queued"
+        _reset_steps(data, step)
         if choice is not None:
             _set_choice(data, choice)
         elif engine and engine != data.get("engine", DEFAULT_ENGINE):

@@ -119,7 +119,7 @@ def load_score(workdir: Path) -> dict:
     if not path.exists():
         template = {
             "title": meta.get("title") or workdir.name,
-            "subtitle": f"{creator} さんの動画のタブ譜から書き起こし" if creator else "動画のタブ譜から書き起こし",
+            "subtitle": default_subtitle(creator),
             "tab_by": creator,
             "tempo": None,
             "time_signature": [4, 4],
@@ -137,6 +137,31 @@ def load_score(workdir: Path) -> dict:
     score.setdefault("title", meta.get("title") or workdir.name)
     score.setdefault("tab_by", creator)  # 欄を作る前の score.json でも、動画の作成者を楽譜に残す
     return score
+
+
+def default_subtitle(creator: str | None) -> str:
+    """score.json の雛形の副題。動画の作成者がいれば名前を入れる。"""
+    return f"{creator} さんの動画のタブ譜から書き起こし" if creator else "動画のタブ譜から書き起こし"
+
+
+def retitle_score(score: dict, *, title: str, creator: str | None, old_meta: dict) -> dict:
+    """曲の情報を書き換えたあとの score.json（見出し）。score は書き換えない。
+
+    title と tab_by（作成者。無ければ None）を置き換える。subtitle は、いまの値が雛形の形の
+    ときだけ新しい作成者の雛形にし、手で直した文言は残す。雛形の形とは、欄が無い・空、または
+    書き換える前の meta.json の作成者・いまの tab_by・新しい作成者・作成者なしのどれかから作る
+    雛形と同じこと（score.json だけ書けて meta.json を書けなかったあとに、同じ内容で保存し直しても
+    揃うよう、新しい作成者も含める）。ほかの欄（tempo など）はそのまま。
+    """
+    out = dict(score)
+    old_tab_by = str(score.get("tab_by") or "").strip() or None
+    defaults = {default_subtitle(c) for c in (video_creator(old_meta), old_tab_by, creator, None)}
+    subtitle = score.get("subtitle")
+    if not str(subtitle or "").strip() or (isinstance(subtitle, str) and subtitle in defaults):
+        out["subtitle"] = default_subtitle(creator)
+    out["title"] = title
+    out["tab_by"] = creator
+    return out
 
 
 def video_creator(meta: dict) -> str | None:

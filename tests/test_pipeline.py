@@ -75,6 +75,67 @@ def test_finished_at_is_latest_step_end_of_finished_job():
     assert pipeline.finished_at({"status": "done"}) is None
     assert pipeline.finished_at({"status": "done", "steps": [{"status": "pending", "ended": None}]}) is None
 
+
+def done_job(status="done"):
+    """全段が済んだ job.json の内容。"""
+    steps = [{"name": n, "label": lb, "status": "done", "started": "2026-10-03T10:00:00", "ended": "2026-10-03T10:05:00",
+              "message": f"{n} の結果"} for n, lb in pipeline.STEPS]  # fmt: skip
+    return {"id": "abcdefghijk", "title": "古い題名", "engine": "claude", "status": status, "steps": steps}
+
+
+def test_rebuild_starts_at_build_step():
+    assert pipeline.REBUILD_FROM in pipeline.STEP_NAMES
+    assert dict(pipeline.STEPS)[pipeline.REBUILD_FROM] == "組み立て"
+    after = pipeline.STEP_NAMES[pipeline.STEP_NAMES.index(pipeline.REBUILD_FROM) :]
+    assert after == ["build", "verify"]  # 読み取りは含まない
+
+
+def test_retitle_resets_build_and_after_when_earlier_steps_are_done():
+    data = done_job()
+    before = json.loads(json.dumps(data))
+    assert pipeline.retitle(data, "新しい題名") is True
+    assert data["title"] == "新しい題名" and data["status"] == "queued"
+    i = pipeline.STEP_NAMES.index("build")
+    assert data["steps"][:i] == before["steps"][:i]  # 組み立てより前の段の状態・時刻は変えない
+    for s in data["steps"][i:]:
+        assert (s["status"], s["started"], s["ended"], s["message"]) == ("pending", None, None, None)
+
+
+@pytest.mark.parametrize("case", ["read-failed", "read-pending", "missing", "extra", "swapped", "no-steps", "bad-steps"])
+def test_retitle_only_renames_unless_rebuildable(case):
+    data = done_job(status="failed")
+    steps = data["steps"]
+    if case == "read-failed":
+        steps[4]["status"] = "failed"
+    elif case == "read-pending":
+        steps[4].update(status="pending", started=None, ended=None)
+    elif case == "missing":
+        del steps[3]
+    elif case == "extra":
+        steps.insert(5, {"name": "extra", "status": "done"})
+    elif case == "swapped":
+        steps[4], steps[5] = steps[5], steps[4]
+    elif case == "no-steps":
+        del data["steps"]
+    else:
+        data["steps"] = ["read", "build"]
+    before = json.loads(json.dumps(data))
+    assert pipeline.retitle(data, "新しい題名") is False
+    assert data == {**before, "title": "新しい題名"}  # 段も状態も変えない
+
+
+def test_reset_from_keeps_its_behavior(tmp_path):
+    job = pipeline.Job.create(tmp_path / "abcdefghijk")
+    data = job.load()
+    data.update(done_job())
+    job.save(data)
+    job.reset_from("read")
+    steps = job.load()["steps"]
+    assert [s["status"] for s in steps] == ["done"] * 4 + ["pending"] * 3
+    assert steps[4]["message"] is None and steps[3]["message"] == "pages の結果"
+    assert job.load()["status"] == "queued"
+
+
 def test_pipeline_runs_to_html_with_fake_agent(tmp_path, monkeypatch):
     fake = FakeAgent()
     monkeypatch.setattr(read, "run_agent", fake)

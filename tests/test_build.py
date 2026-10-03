@@ -120,6 +120,49 @@ def test_build_without_link_nor_creator_shows_no_source(tmp_path):
     assert "元動画" not in (wd / "song.html").read_text(encoding="utf-8")
 
 
+def test_default_subtitle_matches_template(tmp_path):
+    assert build.default_subtitle("Creator") == "Creator さんの動画のタブ譜から書き起こし"
+    assert build.default_subtitle(None) == "動画のタブ譜から書き起こし"
+    write(tmp_path / "song" / "meta.json", {"id": "song", "title": "Song", "creator": "Creator"})
+    assert build.load_score(tmp_path / "song")["subtitle"] == build.default_subtitle("Creator")
+
+
+def test_retitle_score_replaces_title_tab_by_and_default_subtitle():
+    score = {"title": "Song", "subtitle": "Old さんの動画のタブ譜から書き起こし", "tab_by": "Old", "tempo": 137,
+             "tuning": "d4 a3 f3 c3 g2 c2", "capo": 2}  # fmt: skip
+    out = build.retitle_score(score, title="New Song", creator="New", old_meta={"creator": "Old"})
+    assert out == {**score, "title": "New Song", "subtitle": "New さんの動画のタブ譜から書き起こし", "tab_by": "New"}
+    assert score["title"] == "Song"  # 元の表は変えない
+    out = build.retitle_score(score, title="t", creator=None, old_meta={"creator": "Old"})
+    assert out["subtitle"] == "動画のタブ譜から書き起こし" and out["tab_by"] is None
+
+
+def test_retitle_score_keeps_hand_written_subtitle():
+    score = {"title": "Song", "subtitle": "Old さんの演奏から（耳コピで補った所あり）", "tab_by": "Old", "tempo": 120}
+    out = build.retitle_score(score, title="t", creator="New", old_meta={"creator": "Old"})
+    assert out["subtitle"] == score["subtitle"] and out["tab_by"] == "New"
+    out = build.retitle_score({"title": "t", "subtitle": ["形の違う値"]}, title="t", creator="New", old_meta={})
+    assert out["subtitle"] == ["形の違う値"]
+
+
+def test_retitle_score_default_forms():
+    new = "New さんの動画のタブ譜から書き起こし"
+    cases = [
+        ({}, {}),  # 欄が無い
+        ({"subtitle": ""}, {}),
+        ({"subtitle": None}, {}),
+        ({"subtitle": "Meta さんの動画のタブ譜から書き起こし"}, {"creator": "Meta"}),  # 書き換える前の meta の作成者
+        ({"subtitle": "Tab さんの動画のタブ譜から書き起こし", "tab_by": "Tab"}, {"creator": "Meta"}),  # いまの tab_by
+        ({"subtitle": new, "tab_by": "New"}, {"creator": "Old"}),  # score.json だけ書けたあと
+        ({"subtitle": "動画のタブ譜から書き起こし"}, {"creator": "Old"}),  # 作成者なし
+    ]
+    for score, meta in cases:
+        assert build.retitle_score({"title": "t", **score}, title="t", creator="New", old_meta=meta)["subtitle"] == new, score
+    # どの作成者からも作れない文言は、雛形と同じ形でも手で直したものとして残す
+    other = {"title": "t", "subtitle": "Other さんの動画のタブ譜から書き起こし", "tab_by": "Tab"}
+    assert build.retitle_score(other, title="t", creator="New", old_meta={"creator": "Meta"})["subtitle"] == other["subtitle"]
+
+
 def test_source_link_is_https_only():
     assert build.source_link({"source_url": " https://example.com/v "}) == "https://example.com/v"
     for bad in ("javascript:alert(1)", "http://example.com/", "https://exa mple.com/", "", None, 3):
