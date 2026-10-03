@@ -7,6 +7,9 @@
 - 拍: (音 音 ...).長さ {拍の効果}、休符 r.長さ、括弧なしの単音 7.3.8、:N（以後の既定の長さ）、*N（同じ拍の繰り返し）
 - 音: フレット.弦 {音の効果}。フレットは数字、x（ブラッシング）、-（タイの続き）
 - 拍の効果: {d}（付点）、{dd}、{tu 3}（連符）、{gr}（装飾音）、{tempo N}（拍の途中のテンポ変化）、{ch "Am"} など
+
+{pm} のような音の効果を拍の後ろ（.8 のあと）に書くと、alphaTab は楽譜全体を読み込めない。
+検査では注意として知らせ、組み立てでは move_note_effects でその拍の音に付け直す。
 """
 
 from __future__ import annotations
@@ -15,18 +18,95 @@ import re
 from dataclasses import dataclass, field
 from fractions import Fraction
 
-# 拍子を変えない効果・変える効果を区別する必要はないが、知らない効果は注意として出す
-KNOWN_BEAT_EFFECTS = {
-    "d", "dd", "tu", "gr", "tempo", "ch", "f", "fo", "vs", "v", "vw", "s", "p", "tt", "txt", "lyrics",
-    "su", "sd", "cre", "dec", "spd", "sph", "spu", "sd", "ad", "au", "dy", "tb", "tbe", "bu", "bd",
-    "cb", "rasg", "ot", "legatoorigin", "timer", "beam", "slashed", "ds", "fermata", "pm", "lr", "h",
-    "sl", "v", "st", "x",
-}  # fmt: skip
-KNOWN_NOTE_EFFECTS = {
-    "pm", "h", "sl", "ss", "sib", "sia", "sou", "sod", "psu", "psd", "b", "be", "v", "vw", "nh", "ah",
-    "th", "ph", "sh", "fh", "lr", "x", "t", "tr", "st", "ac", "hac", "ten", "g", "lf", "rf", "string",
-    "hide", "slur", "turn", "iturn", "umordent", "lmordent", "tp", "ds",
-}  # fmt: skip
+# 効果の引数の決まり。同梱の alphaTab 1.8.4（templates/vendor/alphatab.min.js）の static beatProperties /
+# noteProperties の表を写したもの（tests/test_alphatex.py で表と同じことを確かめる）。
+# 名前 → None（引数なし）か、書き方の候補の並び。候補は引数の並びで、引数は（型, 読み方, 許す値）。
+# 型は n が数字、s が文字列、i が識別子（引用符のない単語）。許す値は文字列と識別子にだけ効く。
+# 拍の後ろの { } は beatProperties だけを、音の後ろの { } は noteProperties と beatProperties を受け付け、
+# ほかの名前があると楽譜全体を読めない。
+REQUIRED, OPTIONAL, REQUIRED_FLOAT, OPTIONAL_FLOAT, VALUE_LIST, LIST_NO_PAREN = range(6)  # 読み方
+Param = tuple[str, int, tuple[str, ...] | None]
+Signatures = list[list[Param]] | None
+# { } の中の効果 1 つ: （名前, 引数, 小節の中身の中の名前から最後の引数までの位置）
+EffectItem = tuple[str, list, tuple[int, int]]
+
+
+def _bend(types: tuple[str, ...]) -> Signatures:
+    styles = ("default", "gradual", "fast")
+    values: Param = ("n", LIST_NO_PAREN, None)
+    return [
+        [values],
+        [("is", REQUIRED, types), values],
+        [("is", REQUIRED, styles), values],
+        [("is", REQUIRED, types), ("is", REQUIRED, styles), values],
+    ]
+
+
+_DYNAMICS = (
+    "ppp", "pp", "p", "mp", "mf", "f", "ff", "fff", "pppp", "ppppp", "pppppp", "ffff", "fffff", "ffffff", "sf",
+    "sfp", "sfpp", "fp", "rf", "rfz", "sfz", "sffz", "fz", "n", "pf", "sfzp",
+)  # fmt: skip
+_RASGUEADO = (
+    "ii", "mi", "miitriplet", "miianapaest", "pmptriplet", "pmpanapaest", "peitriplet", "peianapaest",
+    "paitriplet", "paianapaest", "amitriplet", "amianapaest", "ppp", "amii", "amip", "eami", "eamii", "peami",
+)  # fmt: skip
+_ACCIDENTALS = (
+    "default", "forcenone", "forcenatural", "forcesharp", "forcedoublesharp", "forceflat", "forcedoubleflat",
+    "d", "-", "n", "#", "##", "x", "b", "bb",
+)  # fmt: skip
+_NUMBER: Signatures = [[("n", REQUIRED, None)]]
+_OPTIONAL_NUMBER: Signatures = [[("n", OPTIONAL, None)]]
+_TEXT: Signatures = [[("si", REQUIRED, None)]]
+
+BEAT_EFFECT_ARGS: dict[str, Signatures] = {
+    **dict.fromkeys(
+        ["f", "fo", "vs", "v", "vw", "s", "p", "tt", "d", "dd", "su", "sd", "cre", "dec", "spd", "sph", "spu",
+         "spe", "slashed", "ds", "glpf", "glpt", "waho", "wahc", "legatoorigin", "timer"]
+    ),  # fmt: skip
+    "tu": [[("n", REQUIRED, ("3", "5", "6", "7", "9", "10", "12"))], [("n", REQUIRED, None), ("n", REQUIRED, None)]],
+    "txt": _TEXT,
+    "lyrics": [[("s", REQUIRED, None)], [("n", REQUIRED, None), ("s", REQUIRED, None)]],
+    "tb": _bend(("custom", "dive", "dip", "hold", "predive", "predivedive")),
+    "tbe": _bend(("custom", "dive", "dip", "hold", "predive", "predivedive")),
+    **dict.fromkeys(["bu", "bd", "au", "ad"], _OPTIONAL_NUMBER),
+    "ch": _TEXT,
+    "gr": [[("is", OPTIONAL, ("onbeat", "beforebeat", "bendgrace", "ob", "bb", "b"))]],
+    "dy": [[("is", REQUIRED, _DYNAMICS)]],
+    "tempo": [
+        [("n", REQUIRED, None), ("i", OPTIONAL, ("hide",))],
+        [("n", REQUIRED, None), ("s", REQUIRED, None), ("i", OPTIONAL, ("hide",))],
+    ],
+    "volume": _NUMBER,
+    "balance": _NUMBER,
+    "tp": [[("n", REQUIRED, None), ("is", OPTIONAL, ("default", "buzzroll"))]],
+    "barre": [[("n", REQUIRED, None), ("is", OPTIONAL, ("full", "half"))]],
+    "rasg": [[("is", REQUIRED, _RASGUEADO)]],
+    "ot": [[("is", REQUIRED, ("15ma", "8va", "regular", "8vb", "15mb"))]],
+    "instrument": [[("n", REQUIRED, None)], [("si", REQUIRED, None)], [("i", REQUIRED, ("percussion",))]],
+    "bank": _NUMBER,
+    "fermata": [[("is", REQUIRED, ("short", "medium", "long")), ("n", OPTIONAL_FLOAT, None)]],
+    "beam": [[("is", REQUIRED, ("invert", "up", "down", "auto", "split", "merge", "splitsecondary"))]],
+}
+NOTE_EFFECT_ARGS: dict[str, Signatures] = {
+    "nh": None,
+    **dict.fromkeys(["ah", "th", "ph", "sh", "fh"], _OPTIONAL_NUMBER),
+    **dict.fromkeys(
+        ["v", "vw", "sl", "ss", "sib", "sia", "sou", "sod", "psu", "psd", "h", "lht", "g", "ac", "hac", "ten"]
+    ),
+    "tr": [[("n", REQUIRED, None), ("n", OPTIONAL, ("16", "32", "64"))]],
+    **dict.fromkeys(["pm", "st", "lr", "x", "t", "turn", "iturn", "umordent", "lmordent", "string", "hide"]),
+    "b": _bend(("custom", "bend", "release", "bendrelease", "hold", "prebend", "prebendbend", "prebendrelease")),
+    "be": _bend(("custom", "bend", "release", "bendrelease", "hold", "prebend", "prebendbend", "prebendrelease")),
+    "lf": [[("n", REQUIRED, ("1", "2", "3", "4", "5"))]],
+    "rf": [[("n", REQUIRED, ("1", "2", "3", "4", "5"))]],
+    "acc": [[("is", REQUIRED, _ACCIDENTALS)]],
+    "slur": [[("s", REQUIRED, None)], [("i", REQUIRED, None)]],
+    "-": None,
+}
+KNOWN_BEAT_EFFECTS = set(BEAT_EFFECT_ARGS)
+KNOWN_NOTE_EFFECTS = set(NOTE_EFFECT_ARGS)
+# 音にしか付けられない効果（拍の後ろに書くと alphaTab が読めない）
+NOTE_ONLY_EFFECTS = KNOWN_NOTE_EFFECTS - KNOWN_BEAT_EFFECTS
 # 小節の先頭で使うメタデータと、その引数の数（None は数字と文字列を続く限り取る）
 BAR_META_ARITY = {"ro": 0, "rc": 1, "ae": 1, "tempo": None, "ts": None, "section": None, "ks": 1, "clef": 1,
                   "jump": 1, "ft": 0, "simile": 1, "tf": 1, "accidentals": 1}  # fmt: skip
@@ -57,6 +137,13 @@ class Note:
     fret: str  # 数字・"x"・"-"
     string: int
     effects: dict[str, list] = field(default_factory=dict)
+    # 書き直すときの位置: 効果を {..} で足す位置（「フレット.弦」の直後）と、音の効果の } の位置
+    pos: int | None = field(default=None, compare=False, repr=False)
+    close: int | None = field(default=None, compare=False, repr=False)
+    # 書いた順の効果（同じ名前が何度あってもすべて）。effects は同じ名前なら最後のもの
+    effect_items: list[EffectItem] = field(default_factory=list, compare=False, repr=False)
+    # 引数の決まりどおりに読めなかった効果（知らない名前を含む）
+    unread: set[str] = field(default_factory=set, compare=False, repr=False)
 
     @property
     def is_tie(self) -> bool:
@@ -70,6 +157,11 @@ class Beat:
     duration: int
     effects: dict[str, list] = field(default_factory=dict)
     bare: bool = False  # 括弧で囲んでいない単音
+    # 書き直すときの位置: 拍の効果の { から } までと、書いた順の効果（同じ名前が何度あってもすべて）
+    effects_span: tuple[int, int] | None = field(default=None, compare=False, repr=False)
+    effect_items: list[EffectItem] = field(default_factory=list, compare=False, repr=False)
+    # 引数の決まりどおりに読めなかった拍の効果（知らない名前を含む）
+    unread: set[str] = field(default_factory=set, compare=False, repr=False)
 
     @property
     def is_grace(self) -> bool:
@@ -166,6 +258,7 @@ def _value(tok: str):
 class _Tokens:
     def __init__(self, text: str):
         self.items: list[tuple[str, str]] = []
+        self.spans: list[tuple[int, int]] = []  # items と同じ順の、text の中の位置
         pos = 0
         while pos < len(text):
             m = TOKEN.match(text, pos)
@@ -176,11 +269,16 @@ class _Tokens:
             if kind is None:
                 continue
             self.items.append((kind, m.group(kind)))
+            self.spans.append(m.span(kind))
         self.i = 0
 
     def peek(self, k: int = 0) -> tuple[str, str] | None:
         j = self.i + k
         return self.items[j] if j < len(self.items) else None
+
+    def last_span(self) -> tuple[int, int]:
+        """最後に読んだ字句の位置。"""
+        return self.spans[self.i - 1]
 
     def next(self) -> tuple[str, str]:
         tok = self.peek()
@@ -207,27 +305,107 @@ def _parse_group(toks: _Tokens) -> list:
             raise ParseError(f"( ) の中に {val!r} があります")
 
 
-def _parse_effects(toks: _Tokens) -> dict[str, list]:
-    """{ ... } の中身。名前のあとに続く数字・文字列・( ) をその引数とする。"""
+def _arg_type(tok: tuple[str, str] | None) -> str | None:
+    """{ } の中の字句の型。n は数字、s は文字列、i は識別子、( は ( ) の始まり。ほかは None。"""
+    if tok is None:
+        return None
+    kind, val = tok
+    if kind == "word":
+        return "n" if re.fullmatch(r"-?\d+(\.\d+)?", val) else "i"
+    return {"str": "s", "lparen": "("}.get(kind)
+
+
+def _take_arg(toks: _Tokens):
+    kind, val = toks.next()
+    if kind == "lparen":
+        return _parse_group(toks)
+    return val[1:-1] if kind == "str" else _value(val)
+
+
+def _read_args(toks: _Tokens, signatures: Signatures) -> list | None:
+    """名前に続く引数を、alphaTab と同じ手順で読む（候補の書き方を、字句を 1 つずつ照らして絞る）。
+
+    決まりに合わなければ None を返す。そのとき toks は途中まで進んでいる。
+    """
+    args: list = []
+    if signatures is not None:
+        at = dict.fromkeys(range(len(signatures)), 0)  # 候補ごとの、次に照らす引数の位置
+        while len(at) > 1 or (at and all(at[k] < len(signatures[k]) for k in at)):
+            tok = toks.peek()
+            kind = _arg_type(tok)
+            if kind is None:
+                break
+            matched = False
+            drop = set()
+            for k in at:
+                while at[k] < len(signatures[k]):
+                    types, mode, allowed = signatures[k][at[k]]
+                    fits = kind in types or (kind == "(" and mode in (VALUE_LIST, LIST_NO_PAREN))
+                    if kind in "si" and allowed is not None:
+                        fits = fits and (tok[1][1:-1] if kind == "s" else tok[1]).lower() in allowed
+                    if fits:
+                        matched = True
+                        if mode != LIST_NO_PAREN:
+                            at[k] += 1
+                        break
+                    if mode in (REQUIRED, REQUIRED_FLOAT):
+                        drop.add(k)
+                        break
+                    at[k] += 1
+                else:
+                    # 引数を読み終えた候補は、次の名前（識別子）の前でだけ残る
+                    if kind != "i":
+                        drop.add(k)
+            if not matched:
+                break
+            args.append(_take_arg(toks))
+            for k in drop:
+                del at[k]
+        # 必須の引数が残っている候補は外す
+        for k in [k for k in at if any(p[1] in (REQUIRED, REQUIRED_FLOAT) for p in signatures[k][at[k] :])]:
+            del at[k]
+        if not at:
+            return None
+    # 引数のあとは、次の名前か } でなければならない
+    tok = toks.peek()
+    if tok is None or (tok[0] != "rbrace" and _arg_type(tok) != "i"):
+        return None
+    return args
+
+
+def _parse_effects(
+    toks: _Tokens, tables: list[dict[str, Signatures]], items: list[EffectItem] | None = None
+) -> tuple[dict[str, list], set[str]]:
+    """{ ... } の中身を、効果の名前とその引数に分ける。
+
+    引数は、tables のうち名前が最初に載っている表の決まりに従って読む。tempo のあとの hide や、dy のあとの rf の
+    ような識別子の引数も、決まりどおりなら引数とする。表にない名前や、決まりに合わない並びは、続く数字・
+    文字列・( ) を引数とみなして読み進める。戻り値は（効果, 決まりどおりに読めなかった名前）で、効果は
+    同じ名前なら最後のもの。items を渡すと、書いた順の効果（同じ名前もすべて）を入れる。
+    """
     effects: dict[str, list] = {}
-    current: str | None = None
+    unread: set[str] = set()
     while True:
         kind, val = toks.next()
         if kind == "rbrace":
-            return effects
-        if kind == "word" and not re.fullmatch(r"-?\d+(\.\d+)?", val):
-            current = val
-            effects[current] = []
-        elif current is None:
+            return effects, unread
+        if _arg_type((kind, val)) != "i":
             raise ParseError(f"効果の名前の前に {val!r} があります")
-        elif kind == "lparen":
-            effects[current].append(_parse_group(toks))
-        elif kind == "str":
-            effects[current].append(val[1:-1])
-        elif kind == "word":
-            effects[current].append(_value(val))
-        else:
-            raise ParseError(f"{{ }} の中に {val!r} があります")
+        start = toks.last_span()[0]
+        after_name = toks.i
+        table = next((t for t in tables if val.lower() in t), None)
+        args = _read_args(toks, table[val.lower()]) if table is not None else None
+        if args is None:
+            unread.add(val)
+            toks.i = after_name
+            args = []
+            while _arg_type(toks.peek()) in ("n", "s", "("):
+                args.append(_take_arg(toks))
+            if (t := toks.peek()) and t[0] != "rbrace" and _arg_type(t) != "i":
+                raise ParseError(f"{{ }} の中に {t[1]!r} があります")
+        effects[val] = args
+        if items is not None:
+            items.append((val, args, (start, toks.last_span()[1])))
 
 
 NOTE_WORD = re.compile(r"^(\d+|x|X|-)\.(\d+)$")
@@ -241,10 +419,11 @@ def _parse_note(word: str, toks: _Tokens) -> Note:
     if not m:
         raise ParseError(f"音の書き方が違います: {word!r}（フレット.弦）")
     fret = m.group(1).lower()
-    note = Note(fret, int(m.group(2)))
+    note = Note(fret, int(m.group(2)), pos=toks.last_span()[1])
     if (t := toks.peek()) and t[0] == "lbrace":
         toks.next()
-        note.effects = _parse_effects(toks)
+        note.effects, note.unread = _parse_effects(toks, [NOTE_EFFECT_ARGS, BEAT_EFFECT_ARGS], note.effect_items)
+        note.close = toks.last_span()[0]
     return note
 
 
@@ -305,7 +484,7 @@ def parse_bar(text: str, default_duration: int = 4) -> tuple[Bar, int]:
         elif kind == "word" and NOTE_DUR_WORD.match(val):
             m = NOTE_DUR_WORD.match(val)
             bare = True
-            notes.append(Note(m.group(1).lower(), int(m.group(2))))
+            notes.append(Note(m.group(1).lower(), int(m.group(2)), pos=toks.last_span()[0] + m.end(2)))
             beat_duration = int(m.group(3))
         elif kind == "word" and NOTE_WORD.match(val):
             bare = True
@@ -318,16 +497,22 @@ def parse_bar(text: str, default_duration: int = 4) -> tuple[Bar, int]:
             toks.next()
             beat_duration = int(DUR_WORD.match(t[1]).group(1))
         effects: dict[str, list] = {}
+        unread: set[str] = set()
+        effects_span: tuple[int, int] | None = None
+        effect_items: list[EffectItem] = []
         if (t := toks.peek()) and t[0] == "lbrace":
             toks.next()
-            effects = _parse_effects(toks)
+            open_at = toks.last_span()[0]
+            # 拍の後ろに書いた音の効果も、付け直せるように音の効果の決まりで引数を読む
+            effects, unread = _parse_effects(toks, [BEAT_EFFECT_ARGS, NOTE_EFFECT_ARGS], effect_items)
+            effects_span = (open_at, toks.last_span()[1])
         repeat = 1
         if (t := toks.peek()) and t[0] == "star":
             toks.next()
             repeat = int(t[1][1:])
         duration = beat_duration
         for _ in range(repeat):
-            beats.append(Beat(notes, rest, beat_duration, effects, bare))
+            beats.append(Beat(notes, rest, beat_duration, effects, bare, effects_span, effect_items, unread))
 
     return Bar(meta, beats, warnings), duration
 
@@ -420,7 +605,24 @@ def check_bars(
             if beat.bare:
                 issues.append(Issue(n, "warning", "括弧のない単音があります（(7.3).8 のように括弧で囲む）"))
             for e in beat.effects:
-                if e not in KNOWN_BEAT_EFFECTS:
+                if e in KNOWN_BEAT_EFFECTS:
+                    if e in beat.unread:
+                        issues.append(Issue(n, "warning", f"{{{e}}} の引数の書き方が alphaTab の決まりに合いません"))
+                    continue
+                if e in NOTE_ONLY_EFFECTS:
+                    written = next((bars[n][s:t] for name, _, (s, t) in beat.effect_items if name == e), e)
+                    if beat.rest:
+                        message = f"{{{e}}} は音の効果です。休符には付けられません"
+                    else:
+                        message = f"{{{e}}} は音の効果です。(7.5{{{written}}}).8 のように音の中に書きます"
+                    if beat.unread or any(note.unread for note in beat.notes):
+                        message += "（{ } の中に読めない書き方があるため、組み立てでは直しません）"
+                    elif _fix_beat(bars[n], beat) is None:
+                        message += "（音の中の効果と合わせると引数の区切りが変わるため、組み立てでは直しません）"
+                    elif beat.rest:
+                        message += "（組み立てでは外します）"
+                    issues.append(Issue(n, "warning", message))
+                else:
                     issues.append(Issue(n, "warning", f"知らない拍の効果 {{{e}}}"))
             seen = set()
             for note in beat.notes:
@@ -432,8 +634,11 @@ def check_bars(
                 if note.fret.isdigit() and int(note.fret) > 24:
                     issues.append(Issue(n, "warning", f"フレット {note.fret} は大きすぎます"))
                 for e in note.effects:
-                    if e not in KNOWN_NOTE_EFFECTS:
+                    # 音に書いた拍の効果は、alphaTab がその拍に付ける
+                    if e not in KNOWN_NOTE_EFFECTS and e not in KNOWN_BEAT_EFFECTS:
                         issues.append(Issue(n, "warning", f"知らない音の効果 {{{e}}}"))
+                    elif e in note.unread:
+                        issues.append(Issue(n, "warning", f"{{{e}}} の引数の書き方が alphaTab の決まりに合いません"))
                 if note.is_tie and not prev_unknown:
                     origin = prev_beat.notes if prev_beat else []
                     if not any(o.string == note.string for o in origin):
@@ -449,3 +654,129 @@ def check_bars(
             seen_keys.add(key)
             unique.append(issue)
     return unique, parsed
+
+
+@dataclass
+class MovedEffects:
+    moved: int = 0  # 拍の後ろから音へ付け直した効果の数（拍ごと）
+    dropped: int = 0  # 休符の拍から外した効果の数
+
+
+def move_note_effects(bars: dict[int, str]) -> tuple[dict[int, str], MovedEffects]:
+    """拍の後ろに書かれた音の効果を、その拍のすべての音に付け直した小節の中身を返す。
+
+    (7.5).8 {pm tempo 143} → (7.5{pm}).8 {tempo 143}、(5.5 0.6).8 {pm} → (5.5{pm} 0.6{pm}).8。
+    同じ効果がすでに付いている音には重ねない。休符の拍に付いたものは外す。拍の効果（tempo・tu など）は
+    引数（{tempo 143 hide} の hide など）ごと、書いた順と重なり（lyrics 0 "a" lyrics 1 "b" など）も
+    そのまま拍に残し、ほかの書き方もそのまま残す。読めない小節と、
+    { } の中に引数の決まりどおりに読めない効果がある拍、付け直すと音の中の効果と引数の区切りが
+    変わってしまう拍は書き換えない。bars は書き換えない。
+    """
+    out: dict[int, str] = {}
+    count = MovedEffects()
+    duration = 4
+    for n in sorted(bars):
+        text = bars[n]
+        try:
+            bar, duration = parse_bar(text, duration)
+        except ParseError:
+            out[n] = text
+            continue
+        edits: list[tuple[int, int, str]] = []  # (始まり, 終わり, 置き換える文字)
+        done: set[tuple[int, int]] = set()  # *N で繰り返した拍は 1 回だけ直す
+        for beat in bar.beats:
+            span = beat.effects_span
+            wrong = [e for e in beat.effects if e in NOTE_ONLY_EFFECTS]
+            if span is None or span in done or not wrong:
+                continue
+            done.add(span)
+            fix = _fix_beat(text, beat)
+            if fix is None:
+                continue
+            edits.extend(fix)
+            if beat.rest or not beat.notes:
+                count.dropped += len(wrong)
+            else:
+                count.moved += len(wrong)
+        for start, end, new in sorted(edits, reverse=True):
+            text = text[:start] + new + text[end:]
+        out[n] = text
+    return out, count
+
+
+def _named(items: list[EffectItem]) -> list[tuple[str, list]]:
+    return [(name, args) for name, args, _ in items]
+
+
+def _reread_effects(
+    inner: str, tables: list[dict[str, Signatures]]
+) -> tuple[list[tuple[str, list]], set[str]] | None:
+    """{ } の中身を、組み立て前と同じ _parse_effects で読み直す。戻り値は（書いた順の（名前, 引数）, 決まり
+    どおりに読めなかった名前）。読めなければ None。"""
+    toks = _Tokens(inner + "}")
+    items: list[EffectItem] = []
+    try:
+        _, unread = _parse_effects(toks, tables, items)
+    except ParseError:
+        return None
+    return (_named(items), unread) if toks.peek() is None else None
+
+
+def _fix_beat(text: str, beat: Beat) -> list[tuple[int, int, str]] | None:
+    """拍の後ろの音の効果を音へ付け直す書き換え（始まり, 終わり, 置き換える文字）の並び。
+
+    拍の { } からは移す効果だけを取り除き、残す効果は書いたまま（順序と重なりも）残す。付け直したあとの
+    { } を読み直し、効果と引数の並びが意図どおりのときだけ返す。音の { } の末尾に足すと前の効果の引数に
+    読まれる（{tempo 143} に hide を足すと tempo の引数になる）ときは先頭に足す。どちらでも意図どおりに
+    読めなければ None（その拍は書き換えない）。
+    """
+    if beat.unread or beat.effects_span is None:
+        return None
+    wrong = [item for item in beat.effect_items if item[0] in NOTE_ONLY_EFFECTS]
+    kept = [(name, args) for name, args, _ in beat.effect_items if name not in NOTE_ONLY_EFFECTS]
+    start, end = beat.effects_span
+    edits: list[tuple[int, int, str]] = []
+    if kept:
+        block = text[start:end]
+        for _, _, (s, e) in reversed(wrong):
+            s, e = s - start, e - start
+            # 前の空白ごと取り除く。{ の直後なら後ろの空白ごと取り除く
+            if block[s - 1].isspace():
+                while block[s - 1].isspace():
+                    s -= 1
+            else:
+                while block[e].isspace():
+                    e += 1
+            block = block[:s] + block[e:]
+        if _reread_effects(block[1:-1], [BEAT_EFFECT_ARGS, NOTE_EFFECT_ARGS]) != (kept, set()):
+            return None
+        edits.append((start, end, block))
+    else:
+        while start > 0 and text[start - 1].isspace():
+            start -= 1
+        edits.append((start, end, ""))
+    if beat.rest:
+        return edits
+    # 拍に同じ音の効果が何度あっても、音には重ねず最後の指定だけを足す
+    last = {item[0]: item for item in wrong}
+    for note in beat.notes:
+        moving = [item for item in wrong if last[item[0]] is item and item[0] not in note.effects]
+        if not moving:
+            continue
+        add = " ".join(text[s:e] for _, _, (s, e) in moving)
+        adding, current = _named(moving), _named(note.effect_items)
+        if note.pos is None:
+            return None
+        if note.close is None:
+            where, tries = (note.pos, note.pos), [(add, adding)]
+        else:
+            open_at = text.index("{", note.pos) + 1
+            inner = text[open_at : note.close].strip()
+            where = (open_at, note.close)
+            tries = [(f"{inner} {add}", current + adding), (f"{add} {inner}", adding + current)]
+        tables = [NOTE_EFFECT_ARGS, BEAT_EFFECT_ARGS]
+        fit = next((t for t, want in tries if _reread_effects(t, tables) == (want, set())), None)
+        if fit is None:
+            return None
+        edits.append((*where, fit if note.close is not None else "{" + fit + "}"))
+    return edits

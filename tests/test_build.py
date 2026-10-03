@@ -32,6 +32,23 @@ def test_build_merges_overlap_and_writes_outputs(tmp_path, capsys):
     assert "https://github.com/CoderLine/alphaTab/tree/v1.8.4" in html
 
 
+def test_build_moves_note_effects_after_beats_into_notes(tmp_path, capsys):
+    # 拍の後ろの音の効果は、出力でその拍の音に付け直す。読み取り結果のファイルは書き換えない
+    wd = setup_work(tmp_path)
+    part = {"1": "(7.5).8 {pm} (7.5).8 {pm tempo 143} (5.5 0.6).4 {pm} r.4 {pm} (7.5).4",
+            "2": "(0.6).2 {d pm} (0.6).4"}
+    write(wd / "parts" / "part_A.json", part)
+    write(wd / "parts" / "part_B.json", {"2": "(0.6).2 {d pm} (0.6).4", "3": "r.1"})
+    assert build.run_build(wd) == 0
+    out = capsys.readouterr().out
+    assert "{pm} は音の効果です。(7.5{pm}).8 のように音の中に書きます" in out  # 検査の注意
+    assert "拍の後ろに書かれた音の効果を音の中へ付け直しました: 4 件（休符の拍から外したもの 1 件）" in out
+    tex = (wd / "song.alphatex").read_text(encoding="utf-8")
+    assert "(7.5{pm}).8 (7.5{pm}).8 {tempo 143} (5.5{pm} 0.6{pm}).4 r.4 (7.5).4 |\n" in tex
+    assert "(0.6{pm}).2 {d} (0.6).4 |\n" in tex
+    assert json.loads((wd / "parts" / "part_A.json").read_text(encoding="utf-8")) == part
+
+
 def test_build_stops_on_conflict_until_resolved(tmp_path, capsys):
     wd = setup_work(tmp_path)
     write(wd / "parts" / "part_A.json", {"1": "r.1", "2": "(9.5 7.6).1"})

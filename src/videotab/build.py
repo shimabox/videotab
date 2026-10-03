@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from videotab import confine, inside
-from videotab.alphatex import Issue, check_bars
+from videotab.alphatex import Issue, check_bars, move_note_effects
 from videotab.render import render_html
 from videotab.workdir import create_json, load_meta, read_json, write_json
 
@@ -308,7 +308,12 @@ def run_build(workdir: Path, allow_check_errors: bool = False) -> int:
         print("出力を止めました。上を直してからもう一度 videotab build してください。")
         return 1
 
-    tex = alphatex_document(merged.bars, score)
+    # 拍の後ろに書かれた音の効果があると alphaTab が楽譜を読めないので、出力だけ音の中へ移す
+    bars, fixed = move_note_effects(merged.bars)
+    if fixed.moved or fixed.dropped:
+        print(f"拍の後ろに書かれた音の効果を音の中へ付け直しました: {fixed.moved} 件"
+              + (f"（休符の拍から外したもの {fixed.dropped} 件）" if fixed.dropped else ""))
+    tex = alphatex_document(bars, score)
     meta = load_meta(workdir)
     name = workdir.name
     html = render_html(
