@@ -43,29 +43,36 @@
     bottom: 0;
     z-index: 10;
     display: flex;
-    align-items: center;
-    gap: 10px 14px;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: 8px;
     padding: 10px 24px calc(10px + env(safe-area-inset-bottom, 0px));
     background: rgba(255, 255, 255, 0.96);
     border-top: 1px solid #ddd;
     box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.06);
   }
   .tm-controls[hidden] { display: none; }
-  .tm-follow {
-    display: inline-flex;
+  /* Two rows by role: playback (with the player's status only while it is
+     not ready), then the key hints with the downloads on the right. A narrow
+     window wraps inside each row; the right-hand part then starts its own
+     line from the left (space-between puts a lone item at the start). */
+  .tm-controls-row {
+    display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
-    font-size: 0.85rem;
-    color: #333;
-    cursor: pointer;
+    justify-content: space-between;
+    gap: 8px 14px;
+  }
+  .tm-playback {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 10px;
   }
   .tm-keys {
     color: #888;
     font-size: 0.78rem;
   }
   .tm-download {
-    margin-left: auto;
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -88,10 +95,35 @@
     opacity: 0.5;
     cursor: not-allowed;
   }
+  button.tm-btn:focus-visible { outline: 2px solid #1f6feb; outline-offset: 1px; }
+  /* Icons are drawn in the button's text colour at its text size, and sit
+     in the line like a letter so icon-only buttons keep the same height. */
+  button.tm-btn svg {
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    vertical-align: -0.125em;
+  }
+  button.tm-icon-btn { padding: 6px 12px; }
+  button.tm-toggle svg { margin-right: 6px; }
+  /* a toggle that is on keeps the button's shape, tinted blue */
+  button.tm-btn[aria-pressed="true"] {
+    background: #e8f0fe;
+    border-color: #1f6feb;
+    color: #174ea6;
+  }
+  button.tm-btn[aria-pressed="true"]:hover:not(:disabled) { background: #d6e4fc; }
+  #tm-play .tm-icon-pause,
+  #tm-play.is-playing .tm-icon-play { display: none; }
+  #tm-play.is-playing .tm-icon-pause { display: inline-block; }
+  /* shown only while the player is loading or unavailable; empty once it
+     can play, and then takes no room */
   .tm-player-status {
     color: #666;
     font-size: 0.85rem;
   }
+  .tm-player-status:empty { display: none; }
+  .tm-player-status.is-error { color: #b3261e; }
   .tm-offline-note {
     margin-top: 8px;
     color: #888;
@@ -166,17 +198,24 @@
 <div id="tm-alphatab-surface"></div>
 
 <div class="tm-controls" id="tm-controls" role="toolbar" aria-label="再生">
-  <button type="button" id="tm-play" class="tm-btn" disabled>Play</button>
-  <button type="button" id="tm-stop" class="tm-btn" disabled>Stop</button>
-  <label class="tm-follow"><input type="checkbox" id="tm-follow" checked> 再生位置を追って自動スクロール</label>
-  <span id="tm-player-status" class="tm-player-status">Player: connecting…</span>
-  <span class="tm-keys">Space: 再生 / 一時停止　Esc: 停止</span>
-  <span class="tm-download" role="group" aria-label="ダウンロード">ダウンロード:
-    <button type="button" class="tm-btn" data-download="gp" disabled title="Guitar Pro・TuxGuitar・MuseScore などで開ける">Guitar Pro</button>
-    <button type="button" class="tm-btn" data-download="midi" disabled>MIDI</button>
-    <button type="button" class="tm-btn" data-download="alphatex">alphaTex</button>
-    <button type="button" class="tm-btn" data-download="print" title="ブラウザの印刷から PDF に保存できる">印刷 / PDF</button>
-  </span>
+  <div class="tm-controls-row">
+    <span class="tm-playback">
+      <button type="button" id="tm-play" class="tm-btn tm-icon-btn" disabled aria-label="再生" title="再生 / 一時停止（Space）" aria-keyshortcuts="Space"><svg class="tm-icon-play" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 2.5v11l9.5-5.5z" fill="currentColor"/></svg><svg class="tm-icon-pause" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="3.5" y="2.5" width="3" height="11" rx="0.5" fill="currentColor"/><rect x="9.5" y="2.5" width="3" height="11" rx="0.5" fill="currentColor"/></svg></button>
+      <button type="button" id="tm-stop" class="tm-btn tm-icon-btn" disabled aria-label="停止" title="停止（Esc）" aria-keyshortcuts="Escape"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="3" y="3" width="10" height="10" rx="1" fill="currentColor"/></svg></button>
+      <button type="button" id="tm-follow" class="tm-btn tm-toggle" aria-pressed="true" title="再生位置を追って楽譜を自動でスクロールする"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 2v8.5M4.5 7 8 10.5 11.5 7M3 14h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>自動スクロール</button>
+      <button type="button" id="tm-mute" class="tm-btn tm-toggle" aria-pressed="false" title="音を出さずに再生する（M）" aria-keyshortcuts="M"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2.5 6H5l3.5-3v10L5 10H2.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M11 5.5a3.5 3.5 0 0 1 0 5M1.5 1.5l13 13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>ミュート</button>
+      <span id="tm-player-status" class="tm-player-status" aria-live="polite">音源を読み込み中…</span>
+    </span>
+  </div>
+  <div class="tm-controls-row">
+    <span class="tm-keys">Space: 再生 / 一時停止　Esc: 停止　M: ミュート</span>
+    <span class="tm-download" role="group" aria-label="ダウンロード">ダウンロード:
+      <button type="button" class="tm-btn" data-download="gp" disabled title="Guitar Pro・TuxGuitar・MuseScore などで開ける">Guitar Pro</button>
+      <button type="button" class="tm-btn" data-download="midi" disabled>MIDI</button>
+      <button type="button" class="tm-btn" data-download="alphatex">alphaTex</button>
+      <button type="button" class="tm-btn" data-download="print" title="ブラウザの印刷から PDF に保存できる">印刷 / PDF</button>
+    </span>
+  </div>
 </div>
 
 <footer class="tm-footer">
@@ -206,6 +245,7 @@
   var statusEl = document.getElementById("tm-player-status");
   var controlsEl = document.getElementById("tm-controls");
   var followEl = document.getElementById("tm-follow");
+  var muteEl = document.getElementById("tm-mute");
 
   // Following playback scrolls only when the playing bar leaves the part of
   // the window above the fixed controls, and can be turned off; the choice
@@ -216,7 +256,7 @@
   var FOLLOW_MARGIN = 16;
   var follow = true;
   try { follow = window.localStorage.getItem(FOLLOW_KEY) !== "off"; } catch (e) { /* storage blocked */ }
-  followEl.checked = follow;
+  followEl.setAttribute("aria-pressed", String(follow));
   function keepPlayingBarVisible() {
     if (!follow) { return; }
     var bar = document.querySelector(".at-cursor-bar");
@@ -228,6 +268,13 @@
       window.scrollTo({ top: window.scrollY + rect.top - FOLLOW_MARGIN, behavior: "smooth" });
     }
   }
+  // Muting plays silently (cursor and following keep going), e.g. to follow
+  // the score while listening to the recording; remembered like following.
+  var MUTE_KEY = "videotab.mute-playback";
+  var muted = false;
+  try { muted = window.localStorage.getItem(MUTE_KEY) === "on"; } catch (e) { /* storage blocked */ }
+  muteEl.setAttribute("aria-pressed", String(muted));
+
   function reserveRoomForControls() {
     document.documentElement.style.setProperty("--tm-controls-room", controlsEl.offsetHeight + "px");
   }
@@ -321,6 +368,19 @@
   // 小節の長さや繰り返しをブラウザ上で調べられるよう、外から触れるようにしておく。
   window.__tabApi = api;
 
+  // alphaTab keeps the volume until its synthesizer is up, so the remembered
+  // mute holds from the very first note; set again once the player is ready.
+  function applyMute() {
+    api.masterVolume = muted ? 0 : 1;
+  }
+  function setMuted(value) {
+    muted = value;
+    muteEl.setAttribute("aria-pressed", String(value));
+    try { window.localStorage.setItem(MUTE_KEY, value ? "on" : "off"); } catch (e) { /* storage blocked */ }
+    applyMute();
+  }
+  applyMute();
+
   api.renderStarted.on(function () {
     window.__tabReady = false;
   });
@@ -331,20 +391,26 @@
   // A broken/unreachable soundfont (offline, blocked CDN, ...) must never
   // take the notation display down with it.
   api.error.on(function () {
-    statusEl.textContent = "Player: unavailable (offline?)";
+    statusEl.textContent = "オフラインのため再生できません";
+    statusEl.classList.add("is-error");
     playBtn.disabled = true;
     stopBtn.disabled = true;
   });
 
+  // Once the player can play there is nothing to report: the status empties
+  // (and hides) and the play button becomes usable.
   api.playerReady.on(function () {
-    statusEl.textContent = "Player: ready";
+    statusEl.textContent = "";
+    statusEl.classList.remove("is-error");
     playBtn.disabled = false;
     stopBtn.disabled = false;
+    applyMute();
   });
 
   api.playerStateChanged.on(function (e) {
     var playing = e.state === alphaTab.synth.PlayerState.Playing;
-    playBtn.textContent = playing ? "Pause" : "Play";
+    playBtn.classList.toggle("is-playing", playing);
+    playBtn.setAttribute("aria-label", playing ? "一時停止" : "再生");
   });
 
   playBtn.addEventListener("click", function () {
@@ -356,10 +422,14 @@
     api.stop();
   });
 
-  followEl.addEventListener("change", function () {
-    follow = followEl.checked;
+  followEl.addEventListener("click", function () {
+    follow = !follow;
+    followEl.setAttribute("aria-pressed", String(follow));
     try { window.localStorage.setItem(FOLLOW_KEY, follow ? "on" : "off"); } catch (e) { /* storage blocked */ }
     keepPlayingBarVisible();
+  });
+  muteEl.addEventListener("click", function () {
+    setMuted(!muted);
   });
   // alphaTab moves the cursor elements when the played beat changes; check
   // them once they are in place.
@@ -368,19 +438,31 @@
   });
 
   // Space plays / pauses from anywhere on the page except a focused control
-  // (a focused button or checkbox already reacts to Space itself). Esc stops
-  // wherever the focus is.
+  // (a focused button, toggles included, already reacts to Space itself). Esc
+  // stops wherever the focus is. M toggles the mute even when a button has
+  // focus: clicking ▶ やミュートのボタン leaves the focus on that button, so
+  // the very next M press needs to work there too.
   document.addEventListener("keydown", function (e) {
     // a held key repeats keydown; act on the first press only
     if (e.repeat) { return; }
-    var tag = e.target && e.target.tagName;
     if (e.key === "Escape") {
       if (!stopBtn.disabled) { api.stop(); }
       return;
     }
-    if (tag === "BUTTON" || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") { return; }
     // Shift+Space (scroll up) and other modified keys keep their usual meaning.
     if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) { return; }
+    var target = e.target;
+    var tag = target && target.tagName;
+    var typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (target && target.isContentEditable);
+    // e.code (physical key position) keeps working when IME composition makes
+    // e.key something other than "m"/"M"; checking it before the BUTTON
+    // exclusion below is what lets M reach the mute right after a click.
+    if (!typing && (e.code === "KeyM" || e.key === "m" || e.key === "M")) {
+      e.preventDefault();
+      setMuted(!muted);
+      return;
+    }
+    if (tag === "BUTTON" || typing) { return; }
     if (e.key === " " && !playBtn.disabled) {
       e.preventDefault();
       api.playPause();

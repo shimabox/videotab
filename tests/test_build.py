@@ -127,6 +127,18 @@ def test_default_subtitle_matches_template(tmp_path):
     assert build.load_score(tmp_path / "song")["subtitle"] == build.default_subtitle("Creator")
 
 
+def test_mute_key_reaches_keydown_even_when_a_button_has_focus(tmp_path):
+    wd = setup_work(tmp_path)
+    write(wd / "parts" / "part_A.json", {"1": "r.1"})
+    assert build.run_build(wd) == 0
+    html = (wd / "song.html").read_text(encoding="utf-8")
+    keydown = html[html.index('addEventListener("keydown"'):]
+    keydown = keydown[: keydown.index("});") + 3]
+    # KeyM で判定し、BUTTON の除外（focus が残ったボタンの上）より前に判定する。
+    assert "KeyM" in keydown
+    assert keydown.index("KeyM") < keydown.index('tag === "BUTTON"')
+
+
 def test_retitle_score_replaces_title_tab_by_and_default_subtitle():
     score = {"title": "Song", "subtitle": "Old さんの動画のタブ譜から書き起こし", "tab_by": "Old", "tempo": 137,
              "tuning": "d4 a3 f3 c3 g2 c2", "capo": 2}  # fmt: skip
@@ -231,6 +243,81 @@ def test_rendered_page_offers_downloads():
     assert "Gp7Exporter" in html and "downloadMidi" in html
     assert file_stem('曲 "A/B"') == "曲 _A_B"
     assert file_stem("...") == "tab"
+
+
+def controls_html(html):
+    return html.split('id="tm-controls"')[1].split('<footer class="tm-footer">')[0]
+
+
+def button_tag(html, button_id):
+    return html.split(f'id="{button_id}"')[1].split(">")[0]
+
+
+def test_rendered_page_offers_mute():
+    # 音を出さずに再生位置を追えるよう、ミュートのトグルのボタンと M キーの案内がある。
+    html = render_html("r.1", title="t", tempo=100, tuning="e4 b3 g3 d3 a2 e2")
+    controls = controls_html(html)
+    mute = button_tag(controls, "tm-mute")
+    assert 'aria-pressed="false"' in mute
+    assert 'title="音を出さずに再生する（M）"' in mute and 'aria-keyshortcuts="M"' in mute
+    assert "ミュート</button>" in controls
+    assert "M: ミュート" in controls
+    assert "api.masterVolume = muted ? 0 : 1" in html
+    assert '"videotab.mute-playback"' in html
+
+
+def test_rendered_page_draws_playback_buttons_as_icons():
+    # 再生と停止は文字ではなくアイコンのボタンで、名前とキーは属性で伝える。
+    html = render_html("r.1", title="t", tempo=100, tuning="e4 b3 g3 d3 a2 e2")
+    controls = controls_html(html)
+    play = button_tag(controls, "tm-play")
+    assert "disabled" in play and 'aria-label="再生"' in play
+    assert 'title="再生 / 一時停止（Space）"' in play and 'aria-keyshortcuts="Space"' in play
+    stop = button_tag(controls, "tm-stop")
+    assert 'aria-label="停止"' in stop and 'title="停止（Esc）"' in stop
+    assert 'aria-keyshortcuts="Escape"' in stop
+    assert "Play" not in controls and "Stop" not in controls
+    assert controls.count("<svg") == controls.count('aria-hidden="true"') >= 5
+    # 再生中は一時停止のアイコンと名前に切り替える。
+    assert 'playBtn.setAttribute("aria-label", playing ? "一時停止" : "再生")' in html
+
+
+def test_rendered_page_toggles_follow_with_a_button():
+    # 自動スクロールは押すと色が変わるトグルのボタン。既定はオンで、選択は記憶する。
+    html = render_html("r.1", title="t", tempo=100, tuning="e4 b3 g3 d3 a2 e2")
+    controls = controls_html(html)
+    follow = button_tag(controls, "tm-follow")
+    assert 'aria-pressed="true"' in follow
+    assert 'title="再生位置を追って楽譜を自動でスクロールする"' in follow
+    assert "自動スクロール</button>" in controls
+    assert 'type="checkbox"' not in controls
+    assert '"videotab.follow-playback"' in html
+
+
+def test_rendered_page_reports_player_status_only_when_not_ready():
+    # 準備中と再生できないときだけ文を出し、再生できるようになったら空にする。
+    html = render_html("r.1", title="t", tempo=100, tuning="e4 b3 g3 d3 a2 e2")
+    status = html.split('id="tm-player-status"')[1].split("</span>")[0]
+    assert 'aria-live="polite"' in status and "音源を読み込み中…" in status
+    assert 'statusEl.textContent = "オフラインのため再生できません"' in html
+    assert 'statusEl.textContent = ""' in html
+    assert ".tm-player-status:empty { display: none; }" in html
+    assert "Player: ready" not in html and "Player: unavailable" not in html
+
+
+def test_rendered_page_lays_controls_in_two_rows():
+    # 再生の操作は役割ごとの 2 段。1 段目は再生の操作と準備の表示、
+    # 2 段目はキー操作の案内と右のダウンロード。
+    html = render_html("r.1", title="t", tempo=100, tuning="e4 b3 g3 d3 a2 e2")
+    rows = controls_html(html).split('<div class="tm-controls-row">')[1:]
+    assert len(rows) == 2
+    play, sub = rows
+    order = ['id="tm-play"', 'id="tm-stop"', 'id="tm-follow"', 'id="tm-mute"', 'id="tm-player-status"']
+    positions = [play.index(s) for s in order]
+    assert positions == sorted(positions)
+    assert "tm-keys" not in play and "data-download" not in play
+    assert sub.index('class="tm-keys"') < sub.index('class="tm-download"')
+    assert 'id="tm-player-status"' not in sub
 
 
 def test_rendered_page_switches_audio_output_under_opaque_origin():
