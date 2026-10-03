@@ -217,6 +217,14 @@
 
   .result .head a { font-size: 0.88rem; }
   .result iframe { width: 100%; height: 78vh; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  /* 読み込み中の新しいタブ譜は、高さを取らずに隠しておく（読み終えたら前のパネルと差し替える） */
+  .result.loading { height: 0; margin: 0; padding: 0; border: 0; overflow: hidden; visibility: hidden; }
+  /* 曲を切り替えて詳細を待つ間は、前の曲の表示を残したまま薄くし、触れないようにする（空にして縮ませない） */
+  #detail.switching { opacity: 0.55; pointer-events: none; }
+  @media (prefers-reduced-motion: no-preference) {
+    #detail { transition: opacity 0.12s; }
+    #detail.switching { transition: opacity 0.15s 0.1s; }  /* すぐ届いたときは薄くしない */
+  }
   details { margin-top: 12px; }
   summary { cursor: pointer; font-size: 0.88rem; color: var(--muted); }
   pre.log {
@@ -311,7 +319,9 @@
   var retryRow = null;  // やり直しの行（同じ曲・同じ状態の間は同じ DOM を使う）
   var infoRow = null;  // 曲の情報の行（同じ曲・同じ状態の間は同じ DOM を使う）
   var infoNotice = null;  // 曲の情報を保存した結果の文（{ id, text, rebuilt, seenBusy }）
-  var shownResult = null;  // いま表示しているタブ譜（id と html）。同じなら iframe を作り直さない
+  var shownResult = null;  // いま見えているタブ譜のパネルの結果キー（id・html・更新時刻）。無ければ null。同じなら iframe を作り直さない
+  var pendingResult = null;  // 読み込み中の新しいタブ譜（{ panel, timer, key, id }）。読み終えたら前のパネルと差し替える
+  var RESULT_WAIT = 4000;  // 新しいタブ譜の load が来ないときに差し替えるまでのミリ秒
   var OPTIONS = null;  // GET /api/jobs の agent_options（選択肢と普段の値）
   var newPicker = null;  // 新規フォームのモデルと推論の強さの欄（更新では作り直さない）
   var OTHER = "__other__";  // モデルの「その他（入力）」
@@ -800,24 +810,76 @@
   }
 
   // #detail の中は、進み具合とタブ譜（変わったときだけ作り直す）に分ける。進み具合のうち、
-  // 見出し・段・報告・ログは更新のたびに作り直し、曲の情報とやり直しの行は同じ曲・同じ状態の間は保つ
-  function areas() {
+  // 見出し・段・報告・ログは更新のたびに作り直し、曲の情報とやり直しの行は同じ曲・同じ状態の間は保つ。
+  // 別の曲になったら（fresh）、進み具合の区画を新しく作り、前の曲の区画と一度に入れ替える
+  function areas(fresh) {
     var box = $("detail");
     var progress = box.querySelector(":scope > .progress-area");
-    if (!progress) {
-      box.textContent = "";
+    if (!progress || fresh) {
       retryRow = null;
       infoRow = null;
-      progress = el("div", { class: "progress-area" }, [el("div", { class: "panel" }, [
+      var next = el("div", { class: "progress-area" }, [el("div", { class: "panel" }, [
         el("div", { class: "p-top" }), el("div", { class: "p-edit" }), el("div", { class: "p-retry" }), el("div", { class: "p-bottom" })
       ])]);
-      box.appendChild(progress);
-      box.appendChild(el("div", { class: "result-area" }));
+      if (progress) {
+        box.replaceChild(next, progress);
+      } else {
+        box.textContent = "";
+        box.appendChild(next);
+      }
+      progress = next;
+    }
+    var result = box.querySelector(":scope > .result-area");
+    if (!result) {
+      result = el("div", { class: "result-area" });
+      box.appendChild(result);
     }
     return {
       top: progress.querySelector(".p-top"), edit: progress.querySelector(".p-edit"), retry: progress.querySelector(".p-retry"),
-      bottom: progress.querySelector(".p-bottom"), result: box.querySelector(":scope > .result-area")
+      bottom: progress.querySelector(".p-bottom"), result: result
     };
+  }
+
+  // 新しいタブ譜のパネルは隠したまま読み込み、iframe の load で（来なければ RESULT_WAIT で）前のパネルと差し替える
+  function loadResult(area, panel, frame, key, id) {
+    var p = { panel: panel, timer: null, key: key, id: id };
+    function swap() {
+      // 待つ間に別のタブ譜に変わった・捨てられた・別の曲を選んだときは差し替えない
+      if (pendingResult !== p || p.id !== selected || panel.parentNode !== area) return;
+      clearTimeout(p.timer);
+      pendingResult = null;
+      Array.prototype.slice.call(area.children).forEach(function (c) { if (c !== panel) area.removeChild(c); });
+      panel.classList.remove("loading");
+      shownResult = p.key;
+    }
+    pendingResult = p;
+    frame.addEventListener("load", swap);
+    p.timer = setTimeout(swap, RESULT_WAIT);
+    area.appendChild(panel);
+  }
+  // 読み込み中の新しいタブ譜を捨てる
+  function dropPendingResult() {
+    if (!pendingResult) return;
+    clearTimeout(pendingResult.timer);
+    if (pendingResult.panel.parentNode) pendingResult.panel.parentNode.removeChild(pendingResult.panel);
+    pendingResult = null;
+  }
+
+  // 曲を切り替えて詳細を待つ間の印
+  function switching() { return $("detail").classList.contains("switching"); }
+  function endSwitching() {
+    var box = $("detail");
+    box.classList.remove("switching");
+    box.removeAttribute("aria-busy");
+  }
+  // 切り替え中に新しい曲の詳細を取れなかったときは、前の曲の表示を消す（選んだ曲と違う曲を見せたままにしない）
+  function clearDetail() {
+    dropPendingResult();
+    shownResult = null;
+    retryRow = null;
+    infoRow = null;
+    $("detail").textContent = "";
+    endSwitching();
   }
 
   // やり直しの行の、エンジンごとの初期値: job のエンジンはその曲に保存された選択、
@@ -912,7 +974,8 @@
   }
 
   function renderDetail(d) {
-    var area = areas();
+    var fresh = !current || current.id !== d.id;  // 選び直した・別の曲になった（前の曲の欄の開閉やログの位置を引き継がない）
+    var area = areas(fresh);
     var top = area.top, bottom = area.bottom;
     var logWasOpen = bottom.querySelector("details.log-box") ? bottom.querySelector("details.log-box").open : d.status === "running";
     var notesWasOpen = bottom.querySelector("details.notes") ? bottom.querySelector("details.notes").open : false;
@@ -990,27 +1053,35 @@
 
     // タブ譜は、別の曲になったか出力が作り直されたときだけ入れ替える（再生やスクロールを保つ）
     var resultKey = d.html ? d.id + "/" + d.html + "/" + (d.updated || "") : null;
-    if (d.status === "running" || d.status === "queued") resultKey = shownResult;  // 実行中は前の表示のまま
-    if (resultKey !== shownResult) {
-      area.result.textContent = "";
-      if (d.html) {
+    var wanted = pendingResult ? pendingResult.key : shownResult;  // 見えている（読み込み待ちならそちらの）タブ譜
+    // 実行中は前の表示のまま（別の曲に切り替えたときは、前の曲のタブ譜を残さず、その曲の出力を出す）
+    if (!fresh && (d.status === "running" || d.status === "queued")) resultKey = wanted;
+    if (resultKey !== wanted) {
+      dropPendingResult();
+      if (resultKey === shownResult) {
+        // 見えているタブ譜のままでよい（読み込み待ちのパネルだけ捨てる）
+      } else if (resultKey) {
         var src = "/files/" + encodeURIComponent(d.id) + "/" + encodeURIComponent(d.html) + "?v=" + encodeURIComponent(d.updated || "");
         var stem = (d.title || d.id).replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "_").replace(/^[ ._]+|[ ._]+$/g, "").slice(0, 120) || "tab";
-        area.result.appendChild(el("div", { class: "panel result" }, [
+        // sandbox は src より先に付ける（値は server.py の FILES_SANDBOX と同じ。allow-same-origin は与えない）
+        var frame = el("iframe", { sandbox: "allow-scripts allow-downloads allow-modals allow-popups allow-popups-to-escape-sandbox", src: src, title: "タブ譜" });
+        loadResult(area.result, el("div", { class: "panel result loading" }, [
           el("div", { class: "head" }, [
             el("h3", { text: "タブ譜" }),
             el("a", { href: src, download: stem + ".html", title: "1 ファイルで、オフラインでも表示できる", text: "HTML をダウンロード" }),
             el("a", { href: src, target: "_blank", rel: "noopener", text: "別のタブで開く" })
           ]),
-          // sandbox は src より先に付ける（値は server.py の FILES_SANDBOX と同じ。allow-same-origin は与えない）
-          el("iframe", { sandbox: "allow-scripts allow-downloads allow-modals allow-popups allow-popups-to-escape-sandbox", src: src, title: "タブ譜" })
-        ]));
+          frame
+        ]), frame, resultKey, d.id);
+      } else {
+        area.result.textContent = "";  // HTML の無い曲では、前のパネルをすぐ消す
+        shownResult = null;
       }
-      shownResult = resultKey;
     }
     var pre = bottom.querySelector("pre.log");
     if (pre && stick) pre.scrollTop = pre.scrollHeight;
     current = d;
+    endSwitching();
   }
 
   function refresh() {
@@ -1021,21 +1092,27 @@
       if (!newPicker) setupNewPicker();
       else newPicker.relabel();
       if (!selected) return;
-      var id = selected;
-      return api("/api/jobs/" + encodeURIComponent(id)).then(function (d) {
-        if (id === selected) renderDetail(d);  // 返事を待つ間に選択が変わった（消したなど）ら出さない
-      }, function (e) {
-        // 開いている曲が無くなった（消したなど）ときは、エラーにせず選択を外す
-        if (e.status !== 404) throw e;
-        if (id === selected) deselect();
-      });
+      return loadDetail(selected);
     }).then(function () {
       if (refreshError !== null && $("form-error").textContent === refreshError) $("form-error").textContent = "";
       refreshError = null;
+    }, showRefreshError).then(schedule);
+  }
+  function showRefreshError(e) {
+    refreshError = (e.status ? "読み込めませんでした: " : "サーバーに届きません: ") + e.message;
+    $("form-error").textContent = refreshError;
+  }
+  function loadDetail(id) {
+    return api("/api/jobs/" + encodeURIComponent(id)).then(function (d) {
+      if (id === selected) renderDetail(d);  // 返事を待つ間に選択が変わった（消したなど）ら出さない
     }, function (e) {
-      refreshError = (e.status ? "読み込めませんでした: " : "サーバーに届きません: ") + e.message;
-      $("form-error").textContent = refreshError;
-    }).then(schedule);
+      // 開いている曲が無くなった（消したなど）ときは、エラーにせず選択を外す
+      if (e.status !== 404) {
+        if (id === selected && switching()) clearDetail();
+        throw e;
+      }
+      if (id === selected) deselect();
+    });
   }
   function deselect() {
     selected = null;
@@ -1045,6 +1122,8 @@
     retryRow = null;
     infoRow = null;
     infoNotice = null;
+    dropPendingResult();
+    endSwitching();
     $("detail").innerHTML = WELCOME;
     Array.prototype.forEach.call($("jobs").querySelectorAll("button[aria-current]"), function (b) { b.setAttribute("aria-current", "false"); });
     history.replaceState(null, "", location.pathname + location.search);
@@ -1054,17 +1133,22 @@
     var busy = current && (current.status === "running" || current.status === "queued");
     pollTimer = setTimeout(refresh, busy ? 2000 : 6000);
   }
+  // 前の曲の表示は空にせず、「切り替え中」の印を付けて残す。新しい曲の詳細が届いたら一度に描き替える
+  // （タブ譜は renderDetail が読み終えてから差し替える）
   function select(id) {
     selected = id;
     current = null;
-    shownResult = null;
     retryChoice = {};
     retryRow = null;
     infoRow = null;
     infoNotice = null;
+    dropPendingResult();  // 前に選んだ曲の、読み込み待ちのタブ譜は捨てる（見えているパネルは残す）
     var box = $("detail");
-    box.textContent = "";
+    box.classList.add("switching");
+    box.setAttribute("aria-busy", "true");
     history.replaceState(null, "", "#" + encodeURIComponent(id));
+    // 詳細は一覧を待たずに取りに行く。最初の一覧（選択肢）が届く前は、refresh に任せる
+    if (newPicker) loadDetail(id).catch(function (e) { if (id === selected) showRefreshError(e); });
     refresh();
   }
 

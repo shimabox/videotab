@@ -631,6 +631,22 @@ def test_result_iframe_is_sandboxed_like_files():
     assert frames[0].index("sandbox:") < frames[0].index("src:")  # src より先に付ける
 
 
+def test_switching_songs_keeps_previous_view_until_new_one_is_ready():
+    section = page_section("一覧と詳細")
+    select = section.split("function select(")[1]
+    assert 'textContent = ""' not in select and "innerHTML" not in select  # 選んだ瞬間に詳細の欄を空にしない
+    assert 'classList.add("switching")' in select and 'setAttribute("aria-busy", "true")' in select
+    assert "loadDetail(id)" in select  # 一覧を待たずに詳細を取りに行く
+    assert "dropPendingResult()" in select.split("\n  }\n")[0]  # 前に選んだ曲の読み込み待ちのタブ譜を捨てる
+    load = section.split("function loadResult(")[1].split("\n  }\n")[0]
+    assert 'addEventListener("load", swap)' in load and "setTimeout(swap, RESULT_WAIT)" in load
+    assert "p.id !== selected" in load  # 選んだ曲のものでなければ差し替えない
+    assert "shownResult = p.key" in load  # 見えるようになったパネルの結果キーを記録する
+    render = section.split("function renderDetail(")[1].split("\n  }\n")[0]
+    assert "shownResult = resultKey" not in render  # 読み込み待ちの間は、見えているパネルの結果キーのまま
+    assert 'area.result.textContent = "";  // HTML の無い曲では、前のパネルをすぐ消す\n        shownResult = null;' in render
+
+
 def test_startup_removes_leftovers_of_deleting(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline.Job, "run", lambda self: True)
     root = tmp_path / "work"
