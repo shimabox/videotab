@@ -389,9 +389,24 @@
   });
 
   // A broken/unreachable soundfont (offline, blocked CDN, ...) must never
-  // take the notation display down with it.
-  api.error.on(function () {
-    statusEl.textContent = "オフラインのため再生できません";
+  // take the notation display down with it. An error before the score is
+  // loaded, or alphaTab's format error, means the alphaTex itself could not
+  // be read: say so instead of blaming the network, and keep ▶ off even if
+  // the soundfont arrives later.
+  var scoreLoaded = false;
+  var scoreFailed = false;
+  api.scoreLoaded.on(function () {
+    scoreLoaded = true;
+  });
+  api.error.on(function (err) {
+    var formatError = alphaTab.importer && alphaTab.importer.UnsupportedFormatError &&
+      err instanceof alphaTab.importer.UnsupportedFormatError;
+    if (!scoreLoaded || formatError) {
+      scoreFailed = true;
+      statusEl.textContent = "楽譜を読み込めませんでした";
+    } else if (!scoreFailed) {
+      statusEl.textContent = "オフラインのため再生できません";
+    }
     statusEl.classList.add("is-error");
     playBtn.disabled = true;
     stopBtn.disabled = true;
@@ -400,6 +415,7 @@
   // Once the player can play there is nothing to report: the status empties
   // (and hides) and the play button becomes usable.
   api.playerReady.on(function () {
+    if (scoreFailed) { return; }
     statusEl.textContent = "";
     statusEl.classList.remove("is-error");
     playBtn.disabled = false;

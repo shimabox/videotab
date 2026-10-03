@@ -305,6 +305,21 @@ def test_rendered_page_reports_player_status_only_when_not_ready():
     assert "Player: ready" not in html and "Player: unavailable" not in html
 
 
+def test_rendered_page_tells_score_load_failure_from_offline():
+    # 楽譜を読み込む前の失敗（alphaTex の誤り）は「楽譜を読み込めませんでした」、読み込んだあとの
+    # 失敗（音源を読めない）だけを「オフラインのため再生できません」とし、どちらも ▶ は押せないまま。
+    html = render_html("r.1", title="t", tempo=100, tuning="e4 b3 g3 d3 a2 e2")
+    script = html.split("api.error.on(function (err) {")[1].split("});")[0]
+    assert "if (!scoreLoaded || formatError) {" in script
+    assert "err instanceof alphaTab.importer.UnsupportedFormatError" in script
+    assert script.index('"楽譜を読み込めませんでした"') < script.index('"オフラインのため再生できません"')
+    assert "playBtn.disabled = true;" in script and 'statusEl.classList.add("is-error");' in script
+    assert "scoreLoaded = true;" in html.split("api.scoreLoaded.on(function () {")[1].split("});")[0]
+    # 楽譜を読めなかったら、あとで音源が届いても ▶ を押せるようにしない
+    ready = html.split("api.playerReady.on(function () {")[1].split("});")[0]
+    assert ready.lstrip().startswith("if (scoreFailed) { return; }")
+
+
 def test_rendered_page_lays_controls_in_two_rows():
     # 再生の操作は役割ごとの 2 段。1 段目は再生の操作と準備の表示、
     # 2 段目はキー操作の案内と右のダウンロード。
