@@ -99,7 +99,7 @@
   .error { color: var(--bad); font-size: 0.88rem; margin: 6px 2px 12px; min-height: 1.2em; }
 
   /* 読み取りのモデルと推論の強さ（新規フォームとやり直しの行で同じ部品）。
-     （新規フォームでは読み取りのエージェントの切り替えも）モデル・「その他」の入力欄・推論の強さ・ボタンは専用の段（.pick-row）に並べ、
+     （新規フォームでは読み取りのエージェントの切り替えとボタンも）モデル・「その他」の入力欄・推論の強さは専用の段（.pick-row）に並べ、
      幅を決めておく。エンジンを切り替えても、選択肢の出し入れで位置が動かない。
      select の幅は「普段の設定（モデルごと）」「普段の設定（gpt-6-astra）」などが切れない幅 */
   .pick-row { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; }
@@ -182,8 +182,25 @@
 
   .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; font-size: 0.85rem; }
   .actions select { font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
-  .actions.retry { flex-direction: column; align-items: stretch; }
-  .actions .retry-main { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  /* やり直しの行。曲の情報との間に線を引き、見出し・段とエージェント・モデルと推論の強さ・ボタンの順に積む。
+     ボタンは文言が段の名前で長さを変えるので、.pick-row に入れず、いつも独立した段の左に置く */
+  .actions.retry { flex-direction: column; align-items: stretch; gap: 8px; border-top: 1px solid var(--line); margin-top: 16px; padding-top: 14px; }
+  .actions .retry-main { display: flex; gap: 8px 10px; flex-wrap: wrap; align-items: center; }
+  .retry-main .pick { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--muted); min-width: 0; max-width: 100%; }
+  .retry-main .pick select { font-size: 0.86rem; padding: 7px 8px; min-width: 0; max-width: 100%; }
+  .retry-main select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .retry-go-row { display: flex; }
+  button.retry-go { border-color: var(--accent); color: var(--accent); background: var(--panel); font-weight: 600; }
+  button.retry-go:hover:not(:disabled) { background: var(--accent-soft); }
+  /* 狭い画面では 4 つの欄（どの段から・読み取りに使う AI・モデル・推論の強さ）の名前を同じ幅にして、select の左端をそろえる。
+     幅は「読み取りに使う AI」が折り返さない幅（名前の文字 0.8rem の 9 文字分）。「その他」の入力欄も同じだけ右に寄せる */
+  @media (max-width: 560px) {
+    .actions.retry { --retry-label: 7.2rem; }
+    .retry-main .pick { flex: 1 1 100%; }
+    .retry-main .pick > span, .actions.retry .pick-row .pick > span { flex: none; width: var(--retry-label); }
+    .retry-main .pick select { flex: 1 1 auto; }
+    .actions.retry .picker .pick-custom { margin-left: calc(var(--retry-label) + 6px); }
+  }
 
   /* 曲の情報（題名・作成者・元動画のページ）。3 つの欄を横に並べ、狭い幅では縦に積む */
   /* .actions の折り返しを残すと、欄の行の高さを折り返したときの高さで見積もり、保存ボタンとの間が空く */
@@ -808,7 +825,7 @@
     // モデルと推論の強さは、普段の設定（null）も含めて常に明示して送る
     api("/api/jobs/" + encodeURIComponent(selected) + "/retry", { step: step, engine: engine, model: c.value.model, effort: c.value.effort })
       .then(function () {
-        remember(engine, c.value, false);  // やり直しの行は「実行」が成功したときに覚える
+        remember(engine, c.value, false);  // やり直しの行はやり直しが成功したときに覚える
         retryChoice = {};
         return refresh();
       }).catch(function (e) { alert(e.message); });
@@ -899,14 +916,21 @@
   function buildRetryRow(d, key) {
     var row = { key: key, job: d };
     var sel = el("select", { "aria-label": "やり直す段" });
-    d.steps.forEach(function (s) { sel.appendChild(el("option", { value: s.name, text: s.label + " から" })); });
+    d.steps.forEach(function (s) { sel.appendChild(el("option", { value: s.name, text: s.label })); });
     // 初期選択は「読み取り」。中断した曲は、済んだ段をやり直さないよう最初の未完了の段にする
     var readStep = d.steps.findIndex(function (s) { return s.name === "read"; });
     var firstUndone = d.status === "stopped" ? d.steps.findIndex(function (s) { return s.status !== "done"; }) : -1;
     if (retryChoice.step) sel.value = retryChoice.step;
     else if (firstUndone >= 0) sel.selectedIndex = firstUndone;
     else if (readStep >= 0) sel.selectedIndex = readStep;
-    sel.addEventListener("change", function () { retryChoice.step = sel.value; });
+    // ボタンは選んだ段の名前で「〈段〉からやり直す」と言う
+    var go = el("button", { type: "button", class: "retry-go", onclick: function () { retry(sel.value); } });
+    function goLabel() {
+      var o = sel.options[sel.selectedIndex];
+      go.textContent = (o ? o.textContent : "") + "からやり直す";
+    }
+    goLabel();
+    sel.addEventListener("change", function () { retryChoice.step = sel.value; goLabel(); });
     var eng = el("select", { name: "engine", "aria-label": "読み取りに使うエージェント" });
     Object.keys(ENGINE_LABELS).forEach(function (k) {
       var o = el("option", { value: k, text: ENGINE_LABELS[k] + (AVAILABLE[k] === false ? "（見つかりません）" : "") });
@@ -927,11 +951,13 @@
       picker.setEngine(eng.value, retryInitial(eng.value));
     });
     row.el = el("div", { class: "actions retry" }, [
-      el("div", { class: "retry-main" }, ["やり直す:", sel, eng]),
-      el("div", { class: "pick-row" }, [
-        picker.root,
-        el("button", { type: "button", text: "実行", onclick: function () { retry(sel.value); } })
-      ])
+      el("span", { class: "info-title", text: "やり直す" }),
+      el("div", { class: "retry-main" }, [
+        el("label", { class: "pick" }, [el("span", { text: "どの段から" }), sel]),
+        el("label", { class: "pick" }, [el("span", { text: "読み取りに使う AI" }), eng])
+      ]),
+      el("div", { class: "pick-row" }, [picker.root]),
+      el("div", { class: "retry-go-row" }, [go])
     ]);
     return row;
   }

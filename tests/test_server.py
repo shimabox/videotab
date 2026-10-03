@@ -665,6 +665,48 @@ def test_switching_songs_keeps_previous_view_until_new_one_is_ready():
     assert 'area.result.textContent = "";  // HTML の無い曲では、前のパネルをすぐ消す\n        shownResult = null;' in render
 
 
+def test_retry_row_has_title_named_fields_and_button_saying_the_step():
+    import re
+    from importlib import resources
+
+    page = resources.files("videotab").joinpath("templates", "app.html").read_text(encoding="utf-8")
+    build = page_section("一覧と詳細").split("function buildRetryRow(")[1].split("\n  }\n\n")[0]
+    # 見出しと、段とエージェントの名前。段の選択肢は段の名前だけで、読み上げ名は前のまま
+    assert 'el("span", { class: "info-title", text: "やり直す" })' in build
+    assert 'text: "どの段から" }), sel]' in build and 'text: "読み取りに使う AI" }), eng]' in build
+    assert 'el("option", { value: s.name, text: s.label })' in build
+    assert '"aria-label": "やり直す段"' in build and '"aria-label": "読み取りに使うエージェント"' in build
+    assert "やり直す:" not in build and '"実行"' not in build and '" から"' not in build
+    # ボタンは選んだ段を言い、初めにも段を変えたときにも文言を作る。押すと選んだ段からやり直す
+    assert 'go.textContent = (o ? o.textContent : "") + "からやり直す"' in build
+    assert build.index("goLabel();") < build.index('sel.addEventListener("change"')  # 初期選択のあとで作る
+    assert re.search(r'sel\.addEventListener\("change", function \(\) \{[^}]*goLabel\(\);', build)
+    assert 'class: "retry-go", onclick: function () { retry(sel.value); }' in build
+    # ボタンはモデルの段（.pick-row）に入れず、その下の独立した段に置く
+    rows = build.split('row.el = el("div", { class: "actions retry" }, [')[1]
+    assert 'el("div", { class: "pick-row" }, [picker.root]),' in rows
+    assert rows.index('class: "pick-row"') < rows.index('el("div", { class: "retry-go-row" }, [go])')
+    # 枠と文字だけのアクセント色。曲の情報とは線で区切る
+    css = page.split("<style>")[1].split("</style>")[0]
+    go = re.search(r"button\.retry-go \{([^}]*)\}", css).group(1)
+    for decl in ("border-color: var(--accent)", "color: var(--accent)", "background: var(--panel)", "font-weight: 600"):
+        assert decl in go, decl
+    assert "border-top: 1px solid var(--line)" in re.search(r"\.actions\.retry \{([^}]*)\}", css).group(1)
+    # 狭い画面では、4 つの欄の名前を同じ幅にして select の左端をそろえ、「その他」の入力欄も同じだけ右に寄せる
+    narrow = [b.split("\n  }\n")[0] for b in css.split("@media (max-width: 560px) {")[1:]]
+    retry_narrow = next(b for b in narrow if ".retry-main" in b)
+    label = re.search(r"\.actions\.retry \{ --retry-label: ([\d.]+)rem; \}", retry_narrow)
+    assert label and float(label.group(1)) == 9 * 0.8  # 名前の文字（0.8rem）の 9 文字分
+    names = re.search(r"([^{}\n]+)\{ flex: none; width: var\(--retry-label\); \}", retry_narrow).group(1)
+    assert {s.strip() for s in names.split(",")} == {".retry-main .pick > span", ".actions.retry .pick-row .pick > span"}
+    assert ".actions.retry .picker .pick-custom { margin-left: calc(var(--retry-label) + 6px); }" in retry_narrow
+    for rule in (r"\.retry-main \.pick \{([^}]*)\}", r"\.picker \.pick, \.pick-row \.engine-pick \{([^}]*)\}"):
+        assert "gap: 6px" in re.search(rule, css).group(1)  # 名前と select の間は どの欄も 6px
+    # 新規フォームのモデル欄は前のまま
+    assert any(".pick-row .pick > span { flex: none; width: 5.5em; }" in b for b in narrow)
+    assert css.count("--retry-label") == len(re.findall(r"--retry-label", retry_narrow))
+
+
 def test_startup_removes_leftovers_of_deleting(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline.Job, "run", lambda self: True)
     root = tmp_path / "work"
