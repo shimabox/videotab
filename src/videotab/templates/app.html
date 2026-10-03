@@ -61,24 +61,27 @@
     background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
     padding: 14px; margin-bottom: 6px;
   }
-  form.new .new-main { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-  /* 動画ファイルの選択とドロップの欄 */
+  /* 動画ファイルの選択とドロップの欄。フォームの 1 行目を横幅いっぱいに使い、
+     アイコン・主文・副文・受け付ける形式を上下左右の中央に縦に並べる */
   form.new .drop {
-    position: relative; display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 320px; cursor: pointer;
-    padding: 10px 12px; border: 1px dashed var(--line); border-radius: 8px; background: var(--bg); color: var(--muted);
+    position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    min-width: 0; min-height: 124px; cursor: pointer; text-align: center;
+    padding: 14px 16px; border: 1px dashed var(--line); border-radius: 8px; background: var(--bg); color: var(--muted);
   }
   form.new .drop.over { border-color: var(--accent); background: var(--accent-soft); color: var(--ink); }
   form.new .drop.chosen { border-style: solid; color: var(--ink); }
   form.new .drop:focus-within { outline: 2px solid var(--accent); outline-offset: -1px; }
   form.new .drop input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
-  form.new .drop .drop-text { overflow-wrap: anywhere; font-size: 0.9rem; }
-  form.new .fields { display: flex; flex-wrap: wrap; gap: 10px; }
-  form.new .fields input {
-    font: inherit; font-size: 0.9rem; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
-    background: var(--bg); color: var(--ink); min-width: 0; flex: 1 1 200px;
+  form.new .drop .drop-icon { width: 30px; height: 30px; margin-bottom: 4px; color: var(--muted); }
+  form.new .drop.over .drop-icon, form.new .drop.chosen .drop-icon { color: var(--accent); }
+  form.new .drop .drop-text { overflow-wrap: anywhere; font-size: 0.95rem; font-weight: 600; color: var(--ink); max-width: 100%; }
+  form.new .drop .drop-sub { font-size: 0.84rem; color: var(--muted); }
+  form.new .drop .drop-note { font-size: 0.74rem; color: var(--muted); margin-top: 2px; }
+  @media (max-width: 860px) { form.new .drop { min-height: 112px; } }
+  @media (max-width: 560px) {
+    form.new .drop { min-height: 100px; padding: 12px; }
+    form.new .drop .drop-icon { width: 26px; height: 26px; margin-bottom: 2px; }
   }
-  form.new .fields input.wide { flex-basis: 320px; }
-  form.new .fields input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   form.new .upload { display: flex; gap: 10px; align-items: center; font-size: 0.85rem; color: var(--muted); }
   form.new .upload[hidden] { display: none; }
   form.new .upload progress { flex: 1 1 auto; max-width: 420px; }
@@ -96,16 +99,19 @@
   .error { color: var(--bad); font-size: 0.88rem; margin: 6px 2px 12px; min-height: 1.2em; }
 
   /* 読み取りのモデルと推論の強さ（新規フォームとやり直しの行で同じ部品）。
-     モデル・「その他」の入力欄・推論の強さ・ボタンは専用の段（.pick-row）に並べ、
+     （新規フォームでは読み取りのエージェントの切り替えも）モデル・「その他」の入力欄・推論の強さ・ボタンは専用の段（.pick-row）に並べ、
      幅を決めておく。エンジンを切り替えても、選択肢の出し入れで位置が動かない。
      select の幅は「普段の設定（モデルごと）」「普段の設定（gpt-6-astra）」などが切れない幅 */
   .pick-row { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; }
   .picker, #new-picker { display: contents; }
-  .picker .pick { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--muted); min-width: 0; max-width: 100%; }
+  .picker .pick, .pick-row .engine-pick { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--muted); min-width: 0; max-width: 100%; }
   .picker select, .picker input {
     font: inherit; font-size: 0.86rem; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--line);
     background: var(--panel); color: var(--ink); min-width: 0; max-width: 100%;
   }
+  /* 読み取りのエージェントの切り替えは段の先頭に置き、高さをモデルの欄にそろえる */
+  .engine-pick .seg { min-width: 0; }
+  .engine-pick .seg label { padding: 7px 12px; }
   .picker .pick-model { width: 17em; }
   .picker .pick-custom { width: 13em; }
   .picker .pick-effort { width: 17em; }
@@ -124,7 +130,12 @@
   }
 
   .layout { display: grid; grid-template-columns: 290px 1fr; gap: 18px; align-items: start; }
-  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } form.new .drop { flex-basis: 100%; } }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } }
+  /* 曲を選んでいない（案内が出ている）ときは、一覧と案内の箱の高さをそろえ、案内を上下の中央に置く。
+     曲を選んだら、一覧が詳細の長さまで伸びないよう、上そろえのままにする */
+  .layout:has(#detail .welcome) { align-items: stretch; }
+  .layout:has(#detail .welcome) #detail { display: flex; flex-direction: column; }
+  #detail > .panel:has(> .welcome) { flex: 1 1 auto; display: flex; align-items: center; padding: 18px; }
 
   .list { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
   .list h2, .panel h2 { font-size: 0.8rem; color: var(--muted); font-weight: 600; margin: 0; padding: 12px 14px 8px; letter-spacing: 0.04em; }
@@ -226,7 +237,7 @@
   .notes .note code { font: 0.8rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code-bg); border-radius: 4px; padding: 0 4px; }
   .notes .note pre { background: var(--code-bg); border-radius: 6px; padding: 8px 10px; margin: 6px 0; overflow: auto; white-space: pre-wrap; }
   .notes .note pre code { background: none; padding: 0; }
-  .welcome { color: var(--muted); padding: 24px 0 8px; }
+  .welcome { color: var(--muted); margin: 0; padding: 20px 0; }
   footer.disclaimer {
     max-width: 1280px; margin: 0 auto; padding: 0 24px 32px;
     color: var(--muted); font-size: 0.78rem; line-height: 1.7;
@@ -243,20 +254,20 @@
 </header>
 <main>
   <form class="new" id="new">
-    <div class="new-main">
-      <label class="drop" id="drop">
-        <input type="file" id="file" accept=".mp4,.m4v,.mov,.webm,.mkv,.avi" aria-label="動画ファイル">
-        <span class="drop-text" id="drop-text"></span>
-      </label>
-      <div class="seg" role="radiogroup" aria-label="読み取りに使うエージェント" id="engines"></div>
-    </div>
-    <div class="fields">
-      <input type="text" id="title" maxlength="200" placeholder="題名（ファイルを選ぶとファイル名が入ります）" aria-label="題名">
-      <input type="text" id="creator" maxlength="200" placeholder="動画の作成者（任意）" aria-label="動画の作成者">
-      <input type="text" id="source-url" class="wide" maxlength="2000" inputmode="url" autocomplete="off" spellcheck="false"
-        placeholder="元動画のページ（任意）例: https://example.com/..." aria-label="元動画のページ">
-    </div>
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept=".mp4,.m4v,.mov,.webm,.mkv,.avi" aria-label="動画ファイル">
+      <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+        <path d="M12 15V4"/><path d="M7.5 8.5 12 4l4.5 4.5"/><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/>
+      </svg>
+      <span class="drop-text" id="drop-text"></span>
+      <span class="drop-sub" id="drop-sub"></span>
+      <span class="drop-note" id="drop-note"></span>
+    </label>
     <div class="pick-row">
+      <div class="pick engine-pick"><span>読み取り</span>
+        <div class="seg" role="radiogroup" aria-label="読み取りに使うエージェント" id="engines"></div>
+      </div>
       <span id="new-picker"></span>
       <button class="primary" type="submit" id="go">タブ譜を作る</button>
     </div>
@@ -1061,7 +1072,9 @@
 
   var VIDEO_EXTS = [".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi"];  // add.VIDEO_EXTS と同じ
   var MAX_BYTES = 4 * 1024 * 1024 * 1024;  // add.MAX_BYTES と同じ（4 GB）
-  var DROP_HINT = "動画ファイルを選ぶか、ここにドロップ（" + VIDEO_EXTS.join(" ") + "、4 GB まで）";
+  var DROP_HINT = "動画ファイルをここにドロップ";
+  var DROP_SUB = "またはクリックして選ぶ";
+  var DROP_SUB_CHOSEN = "別のファイルを選ぶときはクリックかドロップ";
   var chosen = null;  // 送る動画ファイル
   var uploading = null;  // 送っている XMLHttpRequest
 
@@ -1079,6 +1092,7 @@
   function showChosen() {
     $("drop").classList.toggle("chosen", !!chosen);
     $("drop-text").textContent = chosen ? chosen.name + "（" + sizeText(chosen.size) + "）" : DROP_HINT;
+    $("drop-sub").textContent = chosen ? DROP_SUB_CHOSEN : DROP_SUB;
   }
   function choose(f) {
     if (!f || uploading) return;
@@ -1086,8 +1100,6 @@
     $("form-error").textContent = problem || "";
     if (problem) return;
     chosen = f;
-    var dot = f.name.lastIndexOf(".");
-    $("title").value = dot > 0 ? f.name.slice(0, dot) : f.name;  // 題名は、ファイル名（拡張子を除く）から始める
     showChosen();
   }
   $("file").addEventListener("change", function () { choose($("file").files[0]); $("file").value = ""; });
@@ -1102,6 +1114,7 @@
   // 欄の外に落としても、ブラウザがページを動画に切り替えないようにする
   window.addEventListener("dragover", function (ev) { ev.preventDefault(); });
   window.addEventListener("drop", function (ev) { ev.preventDefault(); });
+  $("drop-note").textContent = VIDEO_EXTS.join(" ") + "、4 GB まで";
   showChosen();
 
   function goEnabled() { return Object.keys(AVAILABLE).some(function (k) { return AVAILABLE[k]; }); }
@@ -1119,16 +1132,14 @@
     if (!chosen) { $("form-error").textContent = "動画ファイルを選んでください"; return; }
     var problem = fileProblem(chosen);
     if (problem) { $("form-error").textContent = problem; return; }
-    var link = $("source-url").value.trim();
-    if (link && !/^https:\/\/\S+$/.test(link)) { $("form-error").textContent = "元動画のページは https:// で始まる URL にしてください"; return; }
     var engine = checkedEngine();
     var c = newPicker ? newPicker.check() : { ok: true, value: { model: null, effort: null } };
     if (!c.ok) { newPicker.showError(c.message); return; }
     $("go").disabled = true;
     $("form-error").textContent = "";
     var params = new URLSearchParams();
-    var fields = { name: chosen.name, engine: engine, model: c.value.model, effort: c.value.effort,
-      title: $("title").value.trim(), creator: $("creator").value.trim(), source_url: link };
+    // 題名はサーバーがファイル名から付ける。題名・作成者・元動画のページは、曲の詳細の「曲の情報」で直せる
+    var fields = { name: chosen.name, engine: engine, model: c.value.model, effort: c.value.effort };
     Object.keys(fields).forEach(function (k) { if (fields[k]) params.set(k, fields[k]); });
     var file = chosen;
     var xhr = new XMLHttpRequest();
@@ -1151,9 +1162,6 @@
       uploadDone("");
       chosen = null;
       showChosen();
-      $("title").value = "";
-      $("creator").value = "";
-      $("source-url").value = "";
       if (engine) remember(engine, c.value, true);
       select(d.id);
     };
