@@ -253,6 +253,7 @@
   footer.disclaimer h2 { font-size: 0.8rem; margin: 0 0 4px; }
   footer.disclaimer p { margin: 0 0 12px; }
   footer.disclaimer ul { margin: 0; padding-left: 1.2em; }
+  footer.disclaimer ul + h2 { margin-top: 12px; }
 </style>
 </head>
 <body>
@@ -296,13 +297,17 @@
   </div>
 </main>
 <footer class="disclaimer">
-  <h2>仕組み</h2>
-  <p>画面に写ったタブ譜の数字やリズムは、裏で起動した Claude Code か Codex が読みます（手元のログインと利用枠を使います）。1 曲に数分〜十数分かかります。取り込んだ動画・切り出した画像・タブ譜は work/ に保存され、外には出ません。</p>
+  <h2>使う前に知っておくこと</h2>
+  <ul>
+    <li>タブ譜の数字やリズムは、切り出した画像を Claude Code か Codex に渡して読み取ります（あなたのログインと利用枠を使います）。</li>
+    <li>1 曲に数分〜十数分かかります。</li>
+    <li>動画・画像・タブ譜は、この PC の work/ に保存します。</li>
+  </ul>
   <h2>免責事項</h2>
   <ul>
     <li>書き起こしは画像処理と AI による自動のもので、誤りを含むことがあります。正確さは保証しません。元の動画と照らして確かめてください。</li>
     <li>動画・切り出した画像・書き起こしたタブ譜には、楽曲や元の動画・タブ譜の作り手の著作物が含まれます。私的な練習の範囲で使い、公開・再配布・販売をしないでください。</li>
-    <li>videotab は現状のまま提供され、使用によって生じた損害について作者は責任を負いません。記載の名称は各社・各プロジェクトの商標で、videotab はそれらと提携していません。</li>
+    <li>videotab は現状のまま提供され、使用によって生じた損害について作者は責任を負いません。</li>
   </ul>
 </footer>
 
