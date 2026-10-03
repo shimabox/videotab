@@ -275,9 +275,8 @@ def test_rendered_page_offers_mute():
     html = render_html("r.1", title="t", tempo=100, tuning="e4 b3 g3 d3 a2 e2")
     controls = controls_html(html)
     mute = button_tag(controls, "tm-mute")
-    assert 'aria-pressed="false"' in mute
+    assert 'aria-pressed="false"' in mute and 'aria-label="ミュート"' in mute
     assert 'title="音を出さずに再生する（M）"' in mute and 'aria-keyshortcuts="M"' in mute
-    assert "ミュート</button>" in controls
     assert "M: ミュート" in controls
     assert "api.masterVolume = muted ? 0 : 1" in html
     assert '"videotab.mute-playback"' in html
@@ -294,21 +293,88 @@ def test_rendered_page_draws_playback_buttons_as_icons():
     assert 'aria-label="停止"' in stop and 'title="停止（Esc）"' in stop
     assert 'aria-keyshortcuts="Escape"' in stop
     assert "Play" not in controls and "Stop" not in controls
-    assert controls.count("<svg") == controls.count('aria-hidden="true"') >= 5
+    svgs = [s.split(">")[0] for s in controls.split("<svg")[1:]]
+    assert len(svgs) >= 6 and all('aria-hidden="true"' in s for s in svgs)
     # 再生中は一時停止のアイコンと名前に切り替える。
     assert 'playBtn.setAttribute("aria-label", playing ? "一時停止" : "再生")' in html
 
 
 def test_rendered_page_toggles_follow_with_a_button():
-    # 自動スクロールは押すと色が変わるトグルのボタン。既定はオンで、選択は記憶する。
+    # 自動スクロールはトグルのボタン。既定はオンで、選択は記憶する。
     html = render_html("r.1", title="t", tempo=100, tuning="e4 b3 g3 d3 a2 e2")
     controls = controls_html(html)
     follow = button_tag(controls, "tm-follow")
-    assert 'aria-pressed="true"' in follow
+    assert 'aria-pressed="true"' in follow and 'aria-label="自動スクロール"' in follow
     assert 'title="再生位置を追って楽譜を自動でスクロールする"' in follow
-    assert "自動スクロール</button>" in controls
     assert 'type="checkbox"' not in controls
     assert '"videotab.follow-playback"' in html
+
+
+def toggle_html(controls, button_id):
+    return controls.split(f'id="{button_id}"')[1].split("</button>")[0]
+
+
+def test_rendered_page_says_toggle_states_in_words():
+    # 自動スクロールとミュートは、いまの状態を文言で言う。両方の文言を重ねて片方を隠し、
+    # 切り替えてもボタンの幅が変わらないようにする。読み上げの名前は aria-label で固定し、
+    # 状態は aria-pressed で伝えるので、文言は読み上げない。
+    html = render_html("r.1", title="t", tempo=100, tuning="e4 b3 g3 d3 a2 e2")
+    controls = controls_html(html)
+    expected = {"tm-follow": ("自動スクロール: オン", "自動スクロール: オフ"), "tm-mute": ("ミュート中", "音あり")}
+    for button_id, (on, off) in expected.items():
+        state = toggle_html(controls, button_id).split('<span class="tm-state" aria-hidden="true">')[1]
+        assert f'<span class="tm-state-on">{on}</span><span class="tm-state-off">{off}</span>' in state
+    assert ".tm-state > span { grid-area: 1 / 1; }" in html
+    # 短いほうの文言もアイコンのすぐ右から始め、余りは文言の右に出す。
+    tm_state = html.split(".tm-state {")[1].split("}")[0]
+    assert "text-align: left;" in tm_state
+    assert 'button.tm-toggle[aria-pressed="false"] .tm-state-on { visibility: hidden; }' in html
+    # ミュートは、ミュート中は斜線入りのスピーカー、音ありは音の弧のスピーカー（斜線なし）。
+    mute = toggle_html(controls, "tm-mute")
+    icon_on = mute.split('<svg class="tm-icon-on"')[1].split("</svg>")[0]
+    icon_off = mute.split('<svg class="tm-icon-off"')[1].split("</svg>")[0]
+    assert "M1.5 1.5l13 13" in icon_on and "l13 13" not in icon_off
+    assert 'button.tm-toggle[aria-pressed="false"] .tm-icon-on { display: none; }' in html
+
+
+def test_rendered_page_fills_toggles_in_their_usual_state():
+    # ふだんの状態のトグルは塗りつぶす。自動スクロールのオンは青、音ありは緑で、文字とアイコンは白。
+    # ミュート中だけは聞こえないので赤。色の抜けたボタンは止めている状態と読める。
+    # 塗りつぶしでもキーボードのフォーカスの輪郭が見えるよう、輪郭を離す。
+    html = render_html("r.1", title="t", tempo=100, tuning="e4 b3 g3 d3 a2 e2")
+    style = html.split("<style>")[1].split("</style>")[0]
+    on = style.split('button.tm-toggle[aria-pressed="true"] {')[1].split("}")[0]
+    assert "background: #1f6feb;" in on and "border-color: #1f6feb;" in on and "color: #fff;" in on
+    muted = style.split('#tm-mute[aria-pressed="true"] {')[1].split("}")[0]
+    assert "background: #b3261e;" in muted and "border-color: #b3261e;" in muted
+    sound = style.split('#tm-mute[aria-pressed="false"] {')[1].split("}")[0]
+    assert "background: #1e7d3c;" in sound and "border-color: #1e7d3c;" in sound and "color: #fff;" in sound
+    assert '#tm-mute[aria-pressed="false"]:hover:not(:disabled) {' in style
+    focus = style.split('button.tm-toggle[aria-pressed="true"]:focus-visible')[1].split("}")[0]
+    assert '#tm-mute[aria-pressed="false"]:focus-visible' in focus and "outline-offset: 2px;" in focus
+    # 自動スクロールのオフは色なしのまま。
+    assert 'button.tm-toggle[aria-pressed="false"] {' not in style
+    assert "#tm-follow" not in style
+    assert "#e8f0fe" not in style
+
+
+def test_rendered_page_updates_toggles_through_one_function():
+    # 読み込み時の記憶・クリック・M キーのどれでも、同じ処理でボタンの表示を変える。
+    html = render_html("r.1", title="t", tempo=100, tuning="e4 b3 g3 d3 a2 e2")
+    script = html.split('id="tm-alphatab-lib"')[1].split("</script>")[1]
+    assert 'function showToggle(button, on) {\n    button.setAttribute("aria-pressed", String(on));' in script
+    assert script.count('setAttribute("aria-pressed"') == 1
+    load_follow = script.index("showToggle(followEl, follow);")
+    assert load_follow < script.index("function keepPlayingBarVisible()")
+    assert script.index("showToggle(muteEl, muted);") < script.index("function reserveRoomForControls()")
+    click_follow = script.split('followEl.addEventListener("click", function () {')[1].split("});")[0]
+    assert "showToggle(followEl, follow);" in click_follow
+    set_muted = script.split("function setMuted(value) {")[1].split("}")[0]
+    assert "showToggle(muteEl, value);" in set_muted
+    click_mute = script.split('muteEl.addEventListener("click", function () {')[1].split("});")[0]
+    assert "setMuted(!muted);" in click_mute
+    key_m = script.split('e.code === "KeyM"')[1].split("return;")[0]
+    assert "setMuted(!muted);" in key_m
 
 
 def test_rendered_page_reports_player_status_only_when_not_ready():
