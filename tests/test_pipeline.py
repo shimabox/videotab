@@ -422,6 +422,65 @@ def test_videotab_run_stops_with_same_message_when_locked(tmp_path):
                 cli.main(["run", "abcdefghijk", "--root", str(tmp_path / "work"), *extra])
     assert job.path.read_text(encoding="utf-8") == before  # 握れないうちは job を書き換えない
 
+def test_videotab_run_step_keeps_records_of_earlier_steps(tmp_path, monkeypatch):
+    job, _ = run_read(tmp_path, monkeypatch, fake=FakeAgent({"A": "実際のモデル claude-opus-5-5・推論の強さ high（普段の設定）"}))
+    data = job.load()
+    for s in data["steps"][5:]:  # 組み立て直したと分かるように、前の実行の記録を古くしておく
+        s.update(started="2000-01-01T00:00:00", ended="2000-01-01T00:00:01", message="古い記録", seconds=999)
+    job.save(data)
+    before = job.load()
+
+    def no_agent(*args, **kwargs):
+        raise AssertionError("組み立てからのやり直しでエージェントを起動しない")
+
+    monkeypatch.setattr(read, "run_agent", no_agent)
+    assert cli.main(["run", job.workdir.name, "--root", str(job.workdir.parent), "--step", "build"]) == 0
+    after = job.load()
+    assert after["steps"][:5] == before["steps"][:5]  # 読み取りまでの時刻・所要時間・結果はそのまま
+    assert "実際のモデル claude-opus-5-5" in after["steps"][4]["message"]
+    for s in after["steps"][5:]:
+        assert s["status"] == "done" and s["message"] != "古い記録" and s["started"] != "2000-01-01T00:00:00"
+        assert s["seconds"] != 999
+    assert {k: after[k] for k in ("id", "title", "engine", "created")} == {
+        k: before[k] for k in ("id", "title", "engine", "created")
+    }
+
+
+def test_videotab_run_step_marks_unfinished_earlier_steps_as_done(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(pipeline.Job, "run", lambda self: seen.append(self.load()) or True)
+    wd = tmp_path / "work" / "abcdefghijk"
+    job = pipeline.Job.create(wd, "codex", choice=agent_settings.Choice("gpt-7", "high"))
+    data = job.load()
+    for s in data["steps"][:4]:
+        s.update(status="done", started="2026-01-01T00:00:00", ended="2026-01-01T00:00:05", message=f"{s['name']} の結果", seconds=5)
+    data["steps"][4].update(status="failed", started="2026-01-01T00:00:06", ended="2026-01-01T00:00:09", message="失敗しました")
+    data["status"] = "failed"
+    job.save(data)
+    before = job.load()
+    assert cli.main(["run", wd.name, "--root", str(wd.parent), "--step", "build"]) == 0
+    steps = seen[-1]["steps"]
+    assert steps[:4] == before["steps"][:4]  # 済んでいた段の記録は残す
+    assert steps[4]["status"] == "done" and steps[4]["message"] == "済み"  # 済んでいるものとする
+    assert steps[4]["started"] is None and steps[4]["ended"] is None
+    assert [s["status"] for s in steps[5:]] == ["pending", "pending"]
+    assert (seen[-1]["engine"], seen[-1]["choice"], seen[-1]["status"]) == ("codex", {"model": "gpt-7", "effort": "high"}, "queued")
+
+
+def test_videotab_run_step_recreates_job_with_other_step_list(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(pipeline.Job, "run", lambda self: seen.append(self.load()) or True)
+    wd = tmp_path / "work" / "abcdefghijk"
+    job = pipeline.Job.create(wd)
+    data = job.load()
+    data["steps"] = data["steps"][:-1]  # 段が欠けている
+    data["steps"][0].update(status="done", message="古い記録")
+    job.save(data)
+    assert cli.main(["run", wd.name, "--root", str(wd.parent), "--step", "build"]) == 0
+    steps = seen[-1]["steps"]
+    assert [s["name"] for s in steps] == pipeline.STEP_NAMES  # いままでどおり作り直す
+    assert [s.get("message") for s in steps] == ["済み"] * 5 + [None, None]
+
 def test_frames_step_redoes_incomplete_extraction(tmp_path, monkeypatch):
     wd = make_work(tmp_path, n_pages=2)
     meta = json.loads((wd / "meta.json").read_text(encoding="utf-8"))

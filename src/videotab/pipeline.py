@@ -65,18 +65,23 @@ def finished_at(data: dict) -> str | None:
     return max(ends) if ends else None
 
 
-def rebuildable(data: dict) -> bool:
-    """組み立ての段から組み立て直せる曲か。
-
-    段の名前の並びが STEPS とちょうど同じ（欠け・余分・順序違いが無い）で、組み立てより前の段が
-    すべて済んでいるときだけ。そうでない曲を順番待ちに入れると、読み取りが走るおそれがあるため。
-    """
+def has_steps(data: dict) -> bool:
+    """job.json の内容 data の段の名前の並びが、STEPS とちょうど同じ（欠け・余分・順序違いが無い）か。"""
     steps = data.get("steps") if isinstance(data, dict) else None
     if not (isinstance(steps, list) and all(isinstance(s, dict) for s in steps)):
         return False
-    if [s.get("name") for s in steps] != STEP_NAMES:
+    return [s.get("name") for s in steps] == STEP_NAMES
+
+
+def rebuildable(data: dict) -> bool:
+    """組み立ての段から組み立て直せる曲か。
+
+    段の一覧が STEPS と同じ（has_steps）で、組み立てより前の段がすべて済んでいるときだけ。
+    そうでない曲を順番待ちに入れると、読み取りが走るおそれがあるため。
+    """
+    if not has_steps(data):
         return False
-    return all(s.get("status") == "done" for s in steps[: STEP_NAMES.index(REBUILD_FROM)])
+    return all(s.get("status") == "done" for s in data["steps"][: STEP_NAMES.index(REBUILD_FROM)])
 
 
 def retitle(data: dict, title: str) -> bool:
@@ -90,9 +95,9 @@ def retitle(data: dict, title: str) -> bool:
 
 
 def _reset_steps(data: dict, step: str) -> None:
-    """step とそのあとの段を未実行に戻し、順番待ちの状態にする。"""
+    """step とそのあとの段を未実行に戻し、順番待ちの状態にする（前の実行の所要時間も消す）。"""
     for s in data["steps"][STEP_NAMES.index(step) :]:
-        s.update(status="pending", started=None, ended=None, message=None)
+        s.update(status="pending", started=None, ended=None, message=None, seconds=None)
     data["status"] = "queued"
 
 

@@ -78,7 +78,7 @@ def _resume_command(job_id: str, root: Path) -> str:
 def cmd_run(args) -> int:
     from contextlib import ExitStack
 
-    from videotab.pipeline import STEP_NAMES, Busy, Job
+    from videotab.pipeline import STEP_NAMES, Busy, Job, has_steps
     from videotab.workdir import ID_PATTERN
 
     root = Path(args.root).resolve()
@@ -116,7 +116,15 @@ def cmd_run(args) -> int:
                 print(f"できあがっています: {workdir / (workdir.name + '.html')}（作り直すなら --step で段を指定）")
                 return 0
             engine, choice = _run_choice(args, data)  # job を作る・書き換える前に検査する
-            if args.step or not data:
+            if args.step and has_steps(data):
+                # 画面の「やり直す」と同じく、指定した段から後だけを未実行に戻す（前の段の記録は残す）。
+                # 前の段で済んでいないものは、済んでいるものとする
+                job.reset_from(args.step, engine, choice)
+                for st in job.load()["steps"][: STEP_NAMES.index(args.step)]:
+                    if st.get("status") != "done":
+                        job.update_step(st["name"], status="done", started=None, ended=None, seconds=None,
+                                        message="済み")  # fmt: skip
+            elif args.step or not data:
                 Job.create(workdir, engine, choice=choice)
                 if args.step:
                     for name in STEP_NAMES[: STEP_NAMES.index(args.step)]:
