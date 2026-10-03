@@ -20,6 +20,7 @@ from pathlib import Path
 
 from videotab import confine, inside
 from videotab.agent import run_agent, videotab_bin
+from videotab.agent_settings import ENGINE_NAMES
 from videotab.alphatex import check_bars
 from videotab.build import earlier_parts_folder, load_part, load_score, merge, norm, time_signature_before, workdir_of
 from videotab.workdir import read_json, write_json
@@ -57,7 +58,7 @@ def rules(*numbers: str) -> str:
 
 
 def plan_groups(page_numbers: list[int], max_readers: int = MAX_READERS, per_reader: int = PAGES_PER_READER) -> list[list[int]]:
-    """ページを連続した担当に分ける。境目のページは次の担当と重ねて、2 人が読むようにする。"""
+    """ページを連続した担当に分ける。境目のページは次の担当と重ねて、2 つの担当が読むようにする。"""
     n = len(page_numbers)
     if n == 0:
         return []
@@ -70,6 +71,21 @@ def plan_groups(page_numbers: list[int], max_readers: int = MAX_READERS, per_rea
             hi += 1  # 次の担当の最初のページも読む
         groups.append(page_numbers[lo:hi])
     return groups
+
+
+def plan_message(page_count: int, labels: str, groups: list[list[int]], name: str) -> str:
+    """分担の案を伝えるログの文言（担当が 2 つ以上なら境目の扱いも添える）。
+
+    name は起動するエージェントの名前（agent_settings.ENGINE_NAMES の値、例: Claude Code・Codex）。
+    """
+    ranges = [f"{lb}: {g[0]}〜{g[-1]} ページ" for lb, g in zip(labels, groups)]
+    if len(groups) < 2:
+        return f"{page_count} ページを {name} 1 つで読み取ります（担当 {ranges[0]}）"
+    detail = "、".join([f"担当 {ranges[0]}"] + ranges[1:])
+    return (
+        f"{page_count} ページを {len(groups)} つに分け、{name} を {len(groups)} つ同時に動かして読み取ります"
+        f"（{detail}）。境目のページは両隣の担当が読み、結果を突き合わせます"
+    )
 
 
 def _index_parts(workdir: Path) -> tuple[list[str], dict[int, str]]:
@@ -292,8 +308,7 @@ def read_all(workdir: Path, engine: str, log, *, settings=None, on_actual=None, 
     inside.open_dir(root, "readers").close()
     groups = plan_groups(page_numbers)
     labels = LABELS[: len(groups)]
-    log(f"{len(page_numbers)} ページを {len(groups)} 人で読みます: " + "、".join(
-        f"{lb}={g[0]}〜{g[-1]}" for lb, g in zip(labels, groups)))
+    log(plan_message(len(page_numbers), labels, groups, ENGINE_NAMES[engine]))
     wd = workdir.resolve()
 
     def writable(label: str, first: bool) -> list[Path]:

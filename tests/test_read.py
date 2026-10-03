@@ -18,6 +18,20 @@ def test_plan_groups_overlap_boundary_pages():
     assert sorted(set(sum(groups, []))) == list(range(1, 21))
     assert len(read.plan_groups(list(range(1, 100)))) == 4
 
+def test_plan_message_describes_the_split():
+    assert read.plan_message(10, "A", [list(range(1, 11))], "Claude Code") == (
+        "10 ページを Claude Code 1 つで読み取ります（担当 A: 1〜10 ページ）"
+    )
+    assert read.plan_message(10, "AB", [[1, 2, 3, 4, 5, 6], [6, 7, 8, 9, 10]], "Codex") == (
+        "10 ページを 2 つに分け、Codex を 2 つ同時に動かして読み取ります"
+        "（担当 A: 1〜6 ページ、B: 6〜10 ページ）。境目のページは両隣の担当が読み、結果を突き合わせます"
+    )
+    assert read.plan_message(10, "ABCD", [[1, 2, 3], [3, 4, 5, 6], [6, 7, 8], [8, 9, 10]], "Claude Code") == (
+        "10 ページを 4 つに分け、Claude Code を 4 つ同時に動かして読み取ります"
+        "（担当 A: 1〜3 ページ、B: 3〜6 ページ、C: 6〜8 ページ、D: 8〜10 ページ）。"
+        "境目のページは両隣の担当が読み、結果を突き合わせます"
+    )
+
 def test_claude_command_limits_tools(tmp_path):
     cmd = agent._claude_command("読む", [tmp_path / "parts" / "part_A.json"], tmp_path)
     allowed = cmd[cmd.index("--allowedTools") + 1 : cmd.index("--output-format")]
