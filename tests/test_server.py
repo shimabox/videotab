@@ -9,6 +9,8 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
+import videotab
+
 from videotab import build, pipeline, server
 
 
@@ -72,6 +74,7 @@ def test_server_page_and_job_flow(running_server):
     base, root, ran = running_server
     status, body = call(base + "/")
     assert status == 200 and "タブ譜を作る" in body.decode()
+    assert f'<span class="version">v{videotab.__version__}</span>' in body.decode()  # 見出しの横の版
 
     assert upload(base, header=False)[0] == 403  # 画面以外からの POST は受けない
     assert upload(base, extra={"Origin": "https://evil.example"})[0] == 403  # 別のサイトのページからの POST

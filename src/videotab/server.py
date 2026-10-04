@@ -25,6 +25,7 @@ POST / DELETE は Origin が null になって _from_page で断られ、別の�
 
 from __future__ import annotations
 
+import html
 import json
 import mimetypes
 import os
@@ -43,7 +44,7 @@ from pathlib import Path
 from typing import BinaryIO
 from urllib.parse import parse_qs, unquote, urlparse
 
-from videotab import add, agent_settings, confine, inside, notes_md
+from videotab import __version__, add, agent_settings, confine, inside, notes_md
 from videotab.agent import DEFAULT_ENGINE, ENGINES, available_engines
 from videotab.build import page_html, retitle_score, source_link, video_creator
 from videotab.pipeline import STEP_NAMES, Busy, Job, finished_at, rebuildable, retitle, shown_steps
@@ -590,6 +591,7 @@ def _page_name(d: Path) -> str | None:
 
 def make_handler(app: App):
     page = resources.files("videotab").joinpath("templates", "app.html").read_bytes()
+    page = page.replace(b"__VERSION__", html.escape(__version__).encode())  # 見出しの横の版
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "videotab"
