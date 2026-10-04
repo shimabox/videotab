@@ -19,6 +19,7 @@ import shlex
 import sys
 from pathlib import Path
 
+from videotab import __version__
 from videotab.workdir import WORK_ROOT, load_meta, resolve_target, save_meta
 
 
@@ -334,6 +335,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="videotab", description="手元の動画ファイルから、画面に写るタブ譜を alphaTab の HTML＋alphaTex に書き起こす"
     )
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("serve", help="動画ファイルを送るとタブ譜まで作る画面を開く")

@@ -211,3 +211,13 @@ def test_step_choices_start_with_add(tmp_path, capsys):
     with pytest.raises(SystemExit):
         cli.main(["run", "x", "--step", "nope"])
     assert "choose from add, frames," in capsys.readouterr().err.replace("'", "")
+
+
+def test_version_option_prints_package_version(capsys):
+    import videotab
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--version"])
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == f"videotab {videotab.__version__}"
+    assert videotab.__version__ != "0.0.0"  # pyproject.toml の version を読めている
