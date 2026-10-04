@@ -46,7 +46,7 @@ class Cancel:
             self._set = True
             procs = list(self._procs.items())
         for proc, sig in procs:
-            _stop(proc, sig)
+            stop(proc, sig)
 
     @contextmanager
     def watch(self, proc: subprocess.Popen, sig: int = signal.SIGTERM):
@@ -58,7 +58,7 @@ class Cancel:
             self._procs[proc] = sig
             already = self._set
         if already:
-            _stop(proc, sig)
+            stop(proc, sig)
         try:
             yield
         finally:
@@ -66,7 +66,8 @@ class Cancel:
                 self._procs.pop(proc, None)
 
 
-def _stop(proc: subprocess.Popen, sig: int) -> None:
+def stop(proc: subprocess.Popen, sig: int = signal.SIGTERM) -> None:
+    """proc とその子孫に sig を送り、GRACE 秒たっても終わらないものは強制的に終わらせる。待たずに返る。"""
     if proc.poll() is not None:
         return
     family = _descendants(proc.pid)  # 親が先に終わると子孫をたどれなくなるので、合図の前に調べる

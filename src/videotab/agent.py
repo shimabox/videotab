@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -43,7 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from videotab.agent_settings import AgentSettings, actual_text, claude_args, codex_args, removed_env, valid_model, validate
-from videotab.cancel import Cancel, Cancelled
+from videotab.cancel import Cancel, Cancelled, stop
 
 ENGINES = ("claude", "codex")
 DEFAULT_ENGINE = "claude"
@@ -221,8 +222,10 @@ def run_agent(
     timed_out = threading.Event()
 
     def on_timeout() -> None:
+        # 止める合図（SIGTERM）を子孫にも送り、終わらなければ強制的に終わらせる。すぐ強制的に終わらせると、
+        # エージェントが自分の起動したコマンドを片付けられず、子孫が出力を握ったまま残る
         timed_out.set()
-        proc.kill()
+        stop(proc, signal.SIGTERM)
 
     timer = threading.Timer(TIMEOUT, on_timeout)
     timer.start()

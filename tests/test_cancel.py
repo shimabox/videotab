@@ -113,6 +113,57 @@ def test_run_agent_stops_on_cancel(tmp_path, monkeypatch):
     assert "[A] 止めました" in logs
 
 
+def test_run_agent_timeout_signals_the_agent_and_its_descendants(tmp_path, monkeypatch):
+    # 時間切れでは、エージェントに片付けの機会を与え（SIGTERM）、子孫も止める。出力を握った子孫が残らない
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cleaned = tmp_path / "cleaned"
+    command = bin_dir / "claude"
+    command.write_text(
+        f"#!/bin/sh\ntrap 'touch {shlex.quote(str(cleaned))}; exit 143' TERM\necho start\nsleep 30 &\nwait $!\n",
+        encoding="utf-8",
+    )
+    command.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    timers = []
+
+    class ManualTimer:
+        """時間切れを、テストが呼んだときに起こす（コマンドの起動の速さに左右されないように）。"""
+
+        def __init__(self, interval, function):
+            self.function = function
+            timers.append(self)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(agent.threading, "Timer", ManualTimer)
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    logs, results = [], []
+    t = threading.Thread(
+        target=lambda: results.append(
+            agent.run_agent("読む", engine="claude", workdir=wd, writable=[], log=logs.append, label="A")
+        )
+    )
+    t.start()
+    for _ in range(500):
+        if "[A] start" in logs:  # trap を仕掛け終えた
+            break
+        threading.Event().wait(0.02)
+    assert "[A] start" in logs
+    threading.Event().wait(0.2)  # sleep が起動するまで
+    timers[0].function()  # run_agent の時間切れ
+    t.join(8)
+    assert not t.is_alive(), "子孫が出力を握ったまま残っている"
+    assert len(results) == 1 and not results[0].ok
+    assert cleaned.exists()  # 強制的に終わらせる前に、止める合図が届いた
+    assert any("分を超えたので止めました" in line for line in logs)
+
+
 def test_cli_command_gets_interrupt_and_cleans_up(tmp_path, monkeypatch):
     # videotab のコマンドには SIGINT を送る（Python の後始末が走る）
     marker = tmp_path / "cleaned"
