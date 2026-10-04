@@ -665,6 +665,20 @@ def test_switching_songs_keeps_previous_view_until_new_one_is_ready():
     assert 'area.result.textContent = "";  // HTML の無い曲では、前のパネルをすぐ消す\n        shownResult = null;' in render
 
 
+def test_log_box_is_kept_between_refreshes_so_the_reading_position_stays():
+    # 実行中は 2 秒ごとに詳細を描き直す。ログの欄ごと作り直すと、スクロール位置が先頭に戻る
+    section = page_section("一覧と詳細")
+    render = section.split("function renderDetail(")[1].split("\n  }\n")[0]
+    assert 'bottom.textContent = ""' not in render
+    assert "if (c !== logBox) bottom.removeChild(c);" in render  # ログの欄は残し、ほかを作り直す
+    assert "bottom.insertBefore(notes, logBox);" in render and 'updateLog(logBox.querySelector("pre.log"), d.log);' in render
+    update = section.split("function updateLog(")[1].split("\n  }\n")[0]
+    # 増えた行を足し、頭から外れた行を除く。いちばん下にいるときだけ追い、途中では同じ行を同じ位置に残す
+    assert "pre.removeChild(pre.firstChild)" in update and 'pre.appendChild(el("div", { text: lines[j] }))' in update
+    assert "pre.scrollTop = stick ? pre.scrollHeight : Math.max(keepTop, 0);" in update
+    assert "innerHTML" not in update
+
+
 def test_retry_row_has_title_named_fields_and_button_saying_the_step():
     import re
     from importlib import resources
