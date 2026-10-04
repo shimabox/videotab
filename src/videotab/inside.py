@@ -201,6 +201,22 @@ def has_entries(path: Path) -> bool:
         os.close(fd)
 
 
+def read_up_to(fd: int, limit: int | None = None) -> bytes:
+    """開いた fd から読む。limit を渡すと、limit + 1 バイトで止める（超えたかは呼び出し側が長さで見る）。
+
+    大きさを確かめたあとに書き足されても、limit を超えて読み込まない。fd は閉じない。
+    通常のファイルかどうかは、読む前に呼び出し側が fstat で確かめる（フォルダの fd は読めない）。
+    """
+    chunks, size = [], 0
+    while limit is None or size <= limit:
+        chunk = os.read(fd, 1 << 20 if limit is None else min(1 << 20, limit + 1 - size))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        size += len(chunk)
+    return b"".join(chunks)
+
+
 def _odd(folder: Folder, name: str) -> str | None:
     """name が通常のファイルでない・ほかの名前と中身を共有しているなら、その種類。"""
     try:

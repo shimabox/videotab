@@ -15,8 +15,9 @@ Codex は利用者の設定（~/.codex/config.toml）を読まずに workspace-w
 /tmp と $TMPDIR も外す（$TMPDIR には videotab 本体やほかのプログラムの一時ファイルがある）。
 書けるのは作業フォルダの中だけだが、読むことと、sandbox の中でのコマンドの実行は制限しきれない。
 一時フォルダを外した効果を確かめたのは macOS・codex-cli 0.158.0 で、Linux では確かめていない。
-sandbox のネットワークの制限が効くのはシェルのコマンドだけなので、シェルと画像を見ること以外の
-機能（ChatGPT のコネクタ・プラグイン・web 検索など）は、起動の引数で切る（CODEX_FEATURES_OFF）。
+sandbox のネットワークの制限が効くのはシェルのコマンドだけなので、読み取りに要らない機能
+（ChatGPT のコネクタ・プラグイン・web 検索など）は、起動の引数で切る（CODEX_FEATURES_OFF）。
+残るのは、シェルと、画像を見ること、サブエージェント（権限は親と同じ）。
 シェルのコマンドには、名前に KEY・SECRET・TOKEN を含む環境変数を渡さない。
 作業フォルダと、それを含むリポジトリは untrusted として渡し、そこの AGENTS.md を自動で読ませない
 （読み手が作業フォルダに置いた AGENTS.md が、次の起動の指示にならないように）。
@@ -140,8 +141,11 @@ def _codex_command(
     features_off = [arg for name in CODEX_FEATURES_OFF for arg in ("-c", f"features.{name}=false")]
     # 作業フォルダと、それを含むリポジトリを untrusted として渡す（そこの AGENTS.md を自動で読まない）
     wd = workdir.resolve()
+    # キーは TOML の文字列。JSON の書き方のうち、ASCII でない文字の \uXXXX（絵文字などは代理対になり、
+    # TOML では不正）だけを避ければ、そのまま TOML として読める
     untrusted = ",".join(
-        f'{json.dumps(str(p))}={{trust_level="untrusted"}}' for p in dict.fromkeys([_project_root(wd), wd])
+        f'{json.dumps(str(p), ensure_ascii=False)}={{trust_level="untrusted"}}'
+        for p in dict.fromkeys([_project_root(wd), wd])
     )
     return [
         "codex", "exec", "--ignore-user-config", "--ignore-rules",

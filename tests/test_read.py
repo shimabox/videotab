@@ -94,6 +94,14 @@ def test_codex_does_not_trust_the_work_folder_nor_its_repository(tmp_path):
     assert agent._project_root(alone.resolve()) == alone.resolve()
     cmd = agent._codex_command("読む", alone, tmp_path / "last.txt")
     assert f"projects={{{json.dumps(str(alone.resolve()))}{untrusted}}}" in cmd
+    # 絵文字や引用符を含むパスでも、TOML として読める（JSON の \uXXXX の代理対は TOML では不正）
+    import tomllib
+
+    odd = tmp_path / '🎸 "tab" フォルダ'
+    odd.mkdir()
+    cmd = agent._codex_command("読む", odd, tmp_path / "last.txt")
+    value = next(c for c in (cmd[i + 1] for i, a in enumerate(cmd[:-1]) if a == "-c") if c.startswith("projects="))
+    assert tomllib.loads(value) == {"projects": {str(odd.resolve()): {"trust_level": "untrusted"}}}
 
 
 def test_child_git_does_not_use_an_implicit_bare_repository():

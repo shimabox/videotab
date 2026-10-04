@@ -47,7 +47,7 @@ from videotab import add, agent_settings, confine, inside, notes_md
 from videotab.agent import DEFAULT_ENGINE, ENGINES, available_engines
 from videotab.build import page_html, retitle_score, source_link, video_creator
 from videotab.pipeline import STEP_NAMES, Busy, Job, finished_at, rebuildable, retitle, shown_steps
-from videotab.workdir import ID_PATTERN, load_meta, read_json, save_meta, write_json
+from videotab.workdir import ID_PATTERN, MAX_JSON_BYTES, load_meta, read_json, save_meta, write_json
 
 # /files/ がそのまま返すファイルの種類。.html は入れない（タブ譜のページは App.page が組み立てる）
 SERVED_SUFFIXES = {".png", ".jpg", ".alphatex", ".md"}
@@ -481,13 +481,18 @@ class App:
                 fd = os.open(target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder.fd)
         except (OSError, SystemExit):  # 無い・リンクへ差し替えられた（confine.Outside）など
             return None
-        with os.fdopen(fd, "rb") as f:
-            st = os.fstat(f.fileno())
-            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:  # フォルダも開けるので、読む前に種類を見る
                 return None
-            if limit is not None and st.st_size > limit:
-                return None
-            return target, st, f.read()
+            data = inside.read_up_to(fd, limit)
+        except OSError:
+            return None
+        finally:
+            os.close(fd)
+        if limit is not None and len(data) > limit:
+            return None
+        return target, st, data
 
     def page(self, job_id: str) -> bytes | None:
         """タブ譜のページ（/files/<ID>/<ID>.html で返す中身）。組み立てられなければ None。
@@ -534,14 +539,18 @@ def _read_own_json(workdir: Path, name: str) -> dict | None:
         if os.path.islink(workdir / name):
             raise InfoError(f"{name} がリンクなので、曲の情報を書き換えられません") from None
         raise InfoError(f"{name} を読めません（{inside.reason(e)}）") from None
-    with os.fdopen(fd, "rb") as f:
-        st = os.fstat(f.fileno())
-        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:  # フォルダも開けるので、読む前に種類を見る
             raise InfoError(f"{name} が通常のファイルではないので、曲の情報を書き換えられません")
         try:
-            raw = f.read()
+            raw = inside.read_up_to(fd, MAX_JSON_BYTES)
         except OSError as e:
             raise InfoError(f"{name} を読めません（{inside.reason(e)}）") from None
+    finally:
+        os.close(fd)
+    if len(raw) > MAX_JSON_BYTES:
+        raise InfoError(f"{name} が大きすぎるので、曲の情報を書き換えられません")
     try:
         data = json.loads(raw.decode("utf-8"))
     except ValueError:  # 壊れた JSON（JSONDecodeError）と、UTF-8 として読めないもの

@@ -115,6 +115,21 @@ def test_beat_repeat_is_limited_and_huge_numbers_do_not_crash_the_check():
     assert sorted(parsed) == [3]
 
 
+def test_expanded_beats_and_notes_are_limited(monkeypatch):
+    # *N を何個も並べても、展開後の拍の数は上限を超えない
+    many = " ".join(["r.64 *256"] * 5)
+    with pytest.raises(ParseError, match="1 小節の拍が多すぎます（1024 まで）"):
+        parse_bar(many)
+    assert len(parse_bar(" ".join(["r.64 *256"] * 4))[0].beats) == 1024
+    with pytest.raises(ParseError, match="1 拍の音が多すぎます"):
+        parse_bar("(" + " ".join(["0.6"] * 33) + ").1")
+    # 小節をまたいだ合計にも上限がある。超えた所で止め、後ろは調べない
+    monkeypatch.setattr(videotab.alphatex, "MAX_TOTAL_BEATS", 10)
+    issues, parsed = check_bars({1: "r.4 r.4 r.4 r.4", 2: "r.4 r.4 r.4 r.4", 3: "r.4 r.4 r.4 r.4", 4: "r.1"})
+    assert [(i.bar, i.level) for i in issues] == [(3, "error")] and "拍の合計が多すぎます" in issues[0].message
+    assert sorted(parsed) == [1, 2]
+
+
 def test_full_bar_rest_fits_any_time_signature():
     issues, parsed = check_bars({1: "\\ts 3 4 r.1", 2: "r.2 {d}", 3: "\\ts 6 8 r.1"})
     assert issues == []

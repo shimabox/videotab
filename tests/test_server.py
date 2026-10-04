@@ -614,10 +614,28 @@ def test_tab_page_is_built_from_alphatex_and_stored_html_is_never_served(served)
     # 読めない meta.json・大きすぎる・UTF-8 でない alphaTex でも、保存された HTML には戻らない
     (wd / "meta.json").write_text("[", encoding="utf-8")
     assert request(page_url)[0] == 200
+    (wd / "meta.json").unlink()
+    (wd / "meta.json").mkdir()  # フォルダに差し替えられていても、応答を返す
+    assert request(page_url)[0] == 200
+    (wd / "folder.png").mkdir()  # 返す種類の名前のフォルダ
+    assert request(f"{s.base}/files/{JOB}/folder.png")[0] == 404
     (wd / f"{JOB}.alphatex").write_bytes(b"\xff\xfe")
     assert request(page_url)[0] == 404
     (wd / f"{JOB}.alphatex").write_bytes(b" " * (server.MAX_TEX + 1))
     assert request(page_url)[0] == 404
+
+
+def test_oversized_meta_is_not_loaded_for_the_page_nor_the_edit(served, monkeypatch):
+    s = served
+    saved_job(s.root)
+    wd = s.root / JOB
+    (wd / "meta.json").write_text(json.dumps({"id": JOB, "title": "曲", "source_url": "https://example.com/v"}), encoding="utf-8")
+    (wd / f"{JOB}.alphatex").write_text(TEX, encoding="utf-8")
+    monkeypatch.setattr(server, "MAX_JSON_BYTES", 10)
+    status, _, body = request(f"{s.base}/files/{JOB}/{JOB}.html")
+    assert status == 200 and "example.com/v" not in body.decode("utf-8")  # 読めない meta.json では、元動画の情報を出さない
+    code, body = call(f"{s.base}/api/jobs/{JOB}/info", {"title": "t", "creator": None, "source_url": None})
+    assert code == 500 and "meta.json が大きすぎる" in json.loads(body)["error"]
 
 
 def test_tab_page_is_the_same_as_the_built_html(served, capsys):

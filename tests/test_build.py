@@ -91,9 +91,14 @@ def test_bar_number_is_limited(tmp_path, capsys):
     write(wd / "parts" / "part_A.json", {"1": "r.1", "99999999": "r.1"})
     for call in (lambda: build.load_part(wd / "parts" / "part_A.json"), lambda: build.run_build(wd),
                  lambda: build.run_check(wd / "parts" / "part_A.json")):  # fmt: skip
-        with pytest.raises(SystemExit, match="小節番号 99999999 が大きすぎます（9999 まで）"):
+        with pytest.raises(SystemExit, match="小節番号 99999999 が範囲の外です（0〜9999）"):
             call()
     assert not (wd / "song.html").exists()
+    write(wd / "parts" / "part_A.json", {"0": "r.1", "-1": "r.1"})  # 負の番号は、数に上限が無くなるので断る
+    with pytest.raises(SystemExit, match="小節番号 -1 が範囲の外です"):
+        build.load_part(wd / "parts" / "part_A.json")
+    write(wd / "parts" / "part_A.json", {"0": "r.1", "1": "r.1"})
+    assert sorted(build.load_part(wd / "parts" / "part_A.json")) == [0, 1]
 
 
 def test_huge_json_is_not_loaded(tmp_path, monkeypatch):
