@@ -137,6 +137,17 @@ def _codex_command(
     ]  # fmt: skip
 
 
+def _launch_dir(engine: str, workdir: Path) -> Path:
+    """エージェントのコマンドを起動するときの cwd。
+
+    Claude Code は --restricted でファイル操作を cwd の中に限るので、作業フォルダで起動する。
+    Codex には作業フォルダを -C で渡すので、読み手が書けない作業フォルダの親で起動する。
+    作業フォルダを cwd にすると、読み手がそこに置いたファイルで、次に起動する codex コマンドが
+    変わりうる（実行する版を cwd の設定ファイルで決める道具を通して入れている場合など）。
+    """
+    return workdir if engine == "claude" else workdir.resolve().parent
+
+
 def _describe_claude_event(line: str) -> tuple[str | None, str | None]:
     """stream-json の 1 行から（ログに出す短い説明, 最後の返答）を取り出す。"""
     try:
@@ -204,8 +215,8 @@ def run_agent(
     for name in removed_env(settings) if settings is not None else ():
         env.pop(name, None)
     proc = subprocess.Popen(
-        cmd, cwd=workdir, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-        text=True,
+        cmd, cwd=_launch_dir(engine, workdir), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL, text=True,
     )  # fmt: skip
     timed_out = threading.Event()
 

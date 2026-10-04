@@ -29,6 +29,7 @@
   - web 検索（`-c web_search="disabled"`）
 - シェルのコマンドには、名前に KEY・SECRET・TOKEN を含む環境変数を渡しません（`-c shell_environment_policy.ignore_default_excludes=false`）。ほかの環境変数は渡ります。
 - 上の 2 つの引数が効くことを確かめた環境は codex-cli 0.159.3 です（`codex features list` に同じ引数を付けて確認）。その版の Codex に無い機能の名前は、無視されます。
+- Codex のコマンドは、作業フォルダの親（置き場）を cwd にして起動します。作業フォルダは `-C` で渡します。作業フォルダは読み取りの AI が書けるので、そこに置かれたファイルで、次に起動する `codex` コマンドが変わらないようにするためです（実行する版を cwd の設定ファイルで決める道具を通して `codex` を入れている場合など）。Claude Code は、ファイル操作の範囲が cwd で決まるので、作業フォルダで起動します。
 - ファイルを読むことと、sandbox の中でのコマンドの実行は制限しきれません。
 
 ### videotab check / zoom

@@ -234,9 +234,11 @@ def test_agent_options_show_only_checked_values(tmp_path, monkeypatch):
 
 class FakePopen:
     seen = []
+    cwds = []
 
     def __init__(self, cmd, *, cwd, env, stdout, stderr, stdin, text):
         FakePopen.seen.append((cmd, env))
+        FakePopen.cwds.append(cwd)
         self.stdout = iter([
             json.dumps({"type": "system", "subtype": "init", "model": "claude-sonnet-5"}) + "\n",
             json.dumps({"type": "result", "subtype": "success", "result": "おわり"}) + "\n",
@@ -253,6 +255,7 @@ class FakePopen:
 @pytest.fixture
 def fake_popen(monkeypatch):
     FakePopen.seen = []
+    FakePopen.cwds = []
     monkeypatch.setattr(agent.subprocess, "Popen", FakePopen)
     monkeypatch.setattr(agent.shutil, "which", lambda name: f"/usr/bin/{name}")
     return FakePopen.seen
@@ -323,6 +326,18 @@ def test_codex_command_with_choice(tmp_path, fake_popen):
     i = cmd.index("-m")
     assert cmd[i : i + 4] == ["-m", "gpt-7", "-c", 'model_reasoning_effort="high"']
     assert "--ignore-user-config" in cmd
+
+
+def test_codex_starts_in_the_parent_folder_the_reader_cannot_write(tmp_path, fake_popen):
+    # 作業フォルダは読み手が書けるので、Codex のコマンドはその親で起動する（作業フォルダは -C で渡す）。
+    # Claude Code は、ファイル操作の範囲が cwd で決まるので、作業フォルダで起動する
+    wd = tmp_path / "work" / "song"
+    wd.mkdir(parents=True)
+    launch(wd, "codex", None)
+    launch(wd, "claude", None)
+    assert FakePopen.cwds == [wd.resolve().parent, wd]
+    cmd, env = fake_popen[0]
+    assert cmd[cmd.index("-C") + 1] == str(wd.resolve()) and env[agent.CONFINE_ENV] == str(wd.resolve())
 
 
 def test_run_agent_rejects_bad_choice_before_start(tmp_path, monkeypatch):
