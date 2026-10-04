@@ -278,7 +278,8 @@ def test_usual_settings_keep_env_and_command(tmp_path, monkeypatch, fake_popen, 
     monkeypatch.setenv("ANTHROPIC_MODEL", "claude-sonnet-5")
     launch(tmp_path, engine, settings)
     cmd, env = fake_popen[0]
-    assert env == {**os.environ, agent.CONFINE_ENV: str(tmp_path.resolve())}
+    git = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.bareRepository", "GIT_CONFIG_VALUE_0": "explicit"}
+    assert env == {**os.environ, agent.CONFINE_ENV: str(tmp_path.resolve()), **git}
     if engine == "claude":
         assert cmd == agent._claude_command("読む", [tmp_path / "part_A.json"], tmp_path, settings=settings)
         assert "--model" not in cmd and "--effort" not in cmd

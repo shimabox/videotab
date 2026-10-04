@@ -13,8 +13,15 @@
 - モデルと推論の強さだけは起動の引数で渡します。画面か `videotab run` で選んだ値は `--model` / `--effort` で、選ばなかった項目は videotab がユーザー設定から読んだ値を `--settings`（`model` と `modelSettings` だけの JSON）で渡します。ほかの設定は渡しません。
 - 読めるのは作業フォルダの中だけです。
 - 書けるのは、担当の読み取り結果など決まったファイルだけです。
-- 実行できるのは、`videotab check` と `videotab zoom` だけです。作業フォルダの外を指すパス（`..` や外へのリンクを含む）を渡されたり、作業フォルダの中で読み書きするファイルやフォルダが外を指すリンクだったりすると、videotab 自身が断ります（環境変数 `VIDEOTAB_CONFINE`）。
+- 実行を許すのは、`videotab check` と `videotab zoom` だけです。作業フォルダの外を指すパス（`..` や外へのリンクを含む）を渡されたり、作業フォルダの中で読み書きするファイルやフォルダが外を指すリンクだったりすると、videotab 自身が断ります（環境変数 `VIDEOTAB_CONFINE`）。
+- Claude Code は、許していなくても、作業フォルダの中を読むだけのコマンド（`ls`・`cat` など）を自分の判断で通します。git の読むだけのコマンド（`git log`・`git show` など）も通り、作業フォルダを含むリポジトリのコミット済みの内容まで読めるので、git は明示して禁じます（`--disallowedTools "Bash(git:*)"`）。
 - それ以外の操作は、聞かずに拒否します。読み取りの決まり（AGENTS.md の抜粋）はプロンプトに入れて渡します。
+- 確かめた環境は Claude Code 2.1.289 です。同じ引数で起動して、次が拒否されることを確かめています。
+  - 作業フォルダの外のパス（`cat`・`ls`・`Read`、`..` を使うもの、入力のリダイレクト）
+  - `;`・`&&`・`$( )`・`>`・環境変数の前置きを付けた `videotab check`
+  - 環境変数の表示（`env`・`printenv`・`echo $名前`。`$HOME` など一部の名前は通ります）
+  - ネットワークを使うコマンド（`curl`・`dig`・`ping` など）と、git のコマンド
+  - 決まったファイル以外への書き込み（`Write`・`touch`・リダイレクト）
 
 ### Codex
 
@@ -28,9 +35,21 @@
   - 機能（`-c features.<名前>=false`）: ChatGPT のコネクタ（`apps`）、プラグイン（`plugins`・`remote_plugin`・`tool_suggest`）、サブエージェント（`multi_agent`）、画像の生成（`image_generation`）、ブラウザとコンピュータの操作（`browser_use`・`computer_use`）、フック（`hooks`）、スキルが求める MCP の導入（`skill_mcp_dependency_install`）、ログインシェルの環境の写し取り（`shell_snapshot`）
   - web 検索（`-c web_search="disabled"`）
 - シェルのコマンドには、名前に KEY・SECRET・TOKEN を含む環境変数を渡しません（`-c shell_environment_policy.ignore_default_excludes=false`）。ほかの環境変数は渡ります。
-- 上の 2 つの引数が効くことを確かめた環境は codex-cli 0.159.3 です（`codex features list` に同じ引数を付けて確認）。その版の Codex に無い機能の名前は、無視されます。
+- 作業フォルダと、それを含むリポジトリは、untrusted として渡します（`-c projects={...}`）。そこの `AGENTS.md` を Codex が自動で読まなくなります。読み取りの AI が作業フォルダに置いた `AGENTS.md` が、次の起動の指示にならないようにするためです。読み取りの決まりは、Claude Code と同じくプロンプトに入れて渡します。
+- 確かめた環境は codex-cli 0.159.3 です。同じ引数で起動して、次を確かめています。その版の Codex に無い機能の名前は、無視されます。
+  - 機能を切る引数で、MCP の資源を読むツール・プラグインの導入を求めるツール・画像の生成のツールが外れる。web 検索のツールは無い。サブエージェントのツールは残る（権限は親と同じ）
+  - 名前に TOKEN を含む環境変数は、シェルのコマンドから見えない
+  - ネットワークへの接続、作業フォルダの外と `/tmp` への書き込み、`.codex` の作成は失敗する
+  - `videotab check` は動く
+  - 作業フォルダの `AGENTS.md` は、指示として読み込まれない
 - Codex のコマンドは、作業フォルダの親（置き場）を cwd にして起動します。作業フォルダは `-C` で渡します。作業フォルダは読み取りの AI が書けるので、そこに置かれたファイルで、次に起動する `codex` コマンドが変わらないようにするためです（実行する版を cwd の設定ファイルで決める道具を通して `codex` を入れている場合など）。Claude Code は、ファイル操作の範囲が cwd で決まるので、作業フォルダで起動します。
 - ファイルを読むことと、sandbox の中でのコマンドの実行は制限しきれません。
+
+### どちらの AI にも渡す git の設定
+
+読み取りの AI のプロセスには、git の設定 `safe.bareRepository=explicit` を環境変数（`GIT_CONFIG_COUNT` の仕組み）で渡します。作業フォルダの直下に裸リポジトリの形（`HEAD`・`config`・`objects`・`refs`）を置かれても、そのプロセスから起動される git は、そこをリポジトリとして使いません。裸リポジトリの `config` には git が実行するコマンドを書けるためです。
+
+作業フォルダの中で git を使う道具（git の状態を出すシェルのプロンプトや IDE など）を自分で動かす場合は、`git config --global safe.bareRepository explicit` を設定しておくと、同じ守りが利用者の git にも効きます。
 
 ### videotab check / zoom
 

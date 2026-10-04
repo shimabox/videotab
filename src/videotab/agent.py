@@ -4,7 +4,10 @@ API キーは使わず、手元の claude / codex コマンド（利用者のロ
 
 Claude Code は --restricted と --permission-mode dontAsk で起動する。利用者の設定
 （auto モードなど）を読まず、ファイル操作は作業フォルダの中だけ、書けるのは指定した
-ファイルだけ、実行できるのは videotab check / zoom だけになり、それ以外は聞かずに拒否される。
+ファイルだけになる。実行を許すのは videotab check / zoom だけで、ほかは聞かずに拒否される。
+ただし Claude Code は、作業フォルダの中を読むだけのコマンド（ls・cat など）を自分の判断で通す。
+git の読むだけのコマンドも通り、作業フォルダを含むリポジトリのコミット済みの内容まで読めるので、
+git は明示して禁じる。確かめたのは Claude Code 2.1.289。
 読み取りの決まりはプロンプトに入れて渡す（作業フォルダの外の AGENTS.md は読めないため）。
 
 Codex は利用者の設定（~/.codex/config.toml）を読まずに workspace-write の sandbox で起動し、
@@ -15,6 +18,9 @@ Codex は利用者の設定（~/.codex/config.toml）を読まずに workspace-w
 sandbox のネットワークの制限が効くのはシェルのコマンドだけなので、シェルと画像を見ること以外の
 機能（ChatGPT のコネクタ・プラグイン・web 検索など）は、起動の引数で切る（CODEX_FEATURES_OFF）。
 シェルのコマンドには、名前に KEY・SECRET・TOKEN を含む環境変数を渡さない。
+作業フォルダと、それを含むリポジトリは untrusted として渡し、そこの AGENTS.md を自動で読ませない
+（読み手が作業フォルダに置いた AGENTS.md が、次の起動の指示にならないように）。
+どちらのエージェントの子プロセスの git にも、暗黙の裸リポジトリを使わせない（GIT_ENV）。
 
 どちらも環境変数 VIDEOTAB_CONFINE に作業フォルダを入れて起動する。読み手が実行する
 videotab check / zoom は、これより外のパスを受け付けない（Claude Code の許可はサブコマンド
@@ -65,6 +71,9 @@ CODEX_FEATURES_OFF = (
     "skill_mcp_dependency_install",
     "shell_snapshot",  # 起動時に、利用者のログインシェルを作業フォルダで実行して環境を写し取る
 )
+# 子プロセスの git に渡す設定。作業フォルダの直下に裸リポジトリの形（HEAD・config・objects・refs）を
+# 置かれても、そこをリポジトリとして使わない（その config に書いたコマンドを git が実行するため）
+GIT_ENV = ("safe.bareRepository", "explicit")
 
 
 def available_engines() -> dict[str, bool]:
@@ -102,13 +111,20 @@ def _claude_command(
     # --restricted でも --settings は適用される。渡すのは model と modelSettings だけと、
     # 選んだ値の --model / --effort。--tools・--allowedTools は複数の値を取るので、その前に置く
     extra = claude_args(settings) if settings is not None else []
+    # git の読むだけのコマンド（git show など）は、許可が無くても Claude Code が通すので、明示して禁じる
     return [
         "claude", "-p", prompt,
         "--restricted", "--strict-mcp-config", "--permission-mode", "dontAsk", *extra,
         "--tools", "Read", "Write", "Edit", "Glob", "Grep", "Bash",
         "--allowedTools", *allowed,
+        "--disallowedTools", "Bash(git:*)",
         "--output-format", "stream-json", "--verbose",
     ]  # fmt: skip
+
+
+def _project_root(workdir: Path) -> Path:
+    """Codex がプロジェクトとみなすフォルダ（workdir から上へたどって、最初に .git がある所。無ければ workdir）。"""
+    return next((p for p in [workdir, *workdir.parents] if (p / ".git").exists()), workdir)
 
 
 def _codex_command(
@@ -122,6 +138,11 @@ def _codex_command(
     # モデルと推論の強さだけは、videotab が読んだ値を引数で渡す
     extra = codex_args(settings) if settings is not None else []
     features_off = [arg for name in CODEX_FEATURES_OFF for arg in ("-c", f"features.{name}=false")]
+    # 作業フォルダと、それを含むリポジトリを untrusted として渡す（そこの AGENTS.md を自動で読まない）
+    wd = workdir.resolve()
+    untrusted = ",".join(
+        f'{json.dumps(str(p))}={{trust_level="untrusted"}}' for p in dict.fromkeys([_project_root(wd), wd])
+    )
     return [
         "codex", "exec", "--ignore-user-config", "--ignore-rules",
         "--sandbox", "workspace-write",
@@ -132,10 +153,20 @@ def _codex_command(
         *features_off,
         "-c", 'web_search="disabled"',
         "-c", "shell_environment_policy.ignore_default_excludes=false",
+        "-c", f"projects={{{untrusted}}}",
         *extra,
         "--skip-git-repo-check", "--color", "never",
         "-C", str(workdir.resolve()), "-o", str(last_message.resolve()), prompt,
     ]  # fmt: skip
+
+
+def _add_git_config(env: dict[str, str], key: str, value: str) -> None:
+    """子プロセスの git に設定を 1 つ足す（GIT_CONFIG_COUNT の仕組み。すでにある分の後ろに足す）。"""
+    count = env.get("GIT_CONFIG_COUNT", "")
+    n = int(count) if count.isdigit() else 0
+    env[f"GIT_CONFIG_KEY_{n}"] = key
+    env[f"GIT_CONFIG_VALUE_{n}"] = value
+    env["GIT_CONFIG_COUNT"] = str(n + 1)
 
 
 def _launch_dir(engine: str, workdir: Path) -> Path:
@@ -213,6 +244,7 @@ def run_agent(
     start = time.monotonic()
     final = ""
     env = {**os.environ, CONFINE_ENV: str(workdir.resolve())}
+    _add_git_config(env, *GIT_ENV)
     for name in removed_env(settings) if settings is not None else ():
         env.pop(name, None)
     proc = subprocess.Popen(
