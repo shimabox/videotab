@@ -60,6 +60,31 @@ def test_pages_ignore_cursor_and_split_page_flips(tmp_path):
     assert det.pages[0].pick.index == 3
 
 
+def test_pages_do_not_keep_every_frame_image(tmp_path, monkeypatch):
+    # 長い高解像度の動画でメモリが足りなくならないよう、読んだ画像はフレームごとに手放す
+    import gc
+    import weakref
+
+    seq = [frame(page, cursor_x=40 + 110 * k, rng_seed=page * 5 + k) for page in range(2) for k in range(5)]
+    write_frames(tmp_path, seq)
+    frames, _, setup = detect_setup(tmp_path)
+    alive = []
+    held = []
+    original = pages.band_gray
+
+    def tracked(frame, setup):
+        gc.collect()
+        held.append(sum(r() is not None for r in alive))
+        gray = original(frame, setup)
+        alive.append(weakref.ref(gray.base if gray.base is not None else gray))
+        return gray
+
+    monkeypatch.setattr(pages, "band_gray", tracked)
+    det = pages.detect_pages(frames, setup)
+    assert starts(det) == [1, 6]
+    assert max(held) <= 1  # 次のフレームを読む時点で残っているのは、直前の 1 枚まで
+
+
 def test_pages_split_small_horizontal_scroll(tmp_path):
     seq = [frame(7, shift=0, cursor_x=60 + 100 * k, rng_seed=k) for k in range(4)]
     seq += [frame(7, shift=90, cursor_x=60 + 100 * k, rng_seed=10 + k) for k in range(4)]

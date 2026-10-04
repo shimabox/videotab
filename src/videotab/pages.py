@@ -212,10 +212,15 @@ class Detection:
 
 
 def detect_pages(frames: list[Frame], setup: Setup, threshold: float | None = None) -> Detection:
-    grays = [band_gray(f, setup) for f in frames]
     dys = [setup.dy(f.index) for f in frames]
-    tab = [has_tab(g, setup, dy=d) for g, d in zip(grays, dys)]
-    inks = [ink_map(g, setup) for g in grays]
+    # 画像はフレームごとに読んで、比べるのに要る小さいインクの地図だけを残す
+    # （全フレームのグレー画像を持つと、長い高解像度の動画でメモリが足りなくなる）
+    tab: list[bool] = []
+    inks: list[np.ndarray] = []
+    for f, d in zip(frames, dys):
+        gray = band_gray(f, setup)
+        tab.append(has_tab(gray, setup, dy=d))
+        inks.append(ink_map(gray, setup))
 
     diffs = [0.0] + [ink_diff(inks[i], inks[i - 1]) for i in range(1, len(frames))]
     tab_diffs = np.array([d for i, d in enumerate(diffs) if i and tab[i] and tab[i - 1]])

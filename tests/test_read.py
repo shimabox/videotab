@@ -225,6 +225,46 @@ def test_stash_previous_and_marks_skip_single_frame_pages(tmp_path):
     (wd / "readers" / "pagebars_A.json").write_text(json.dumps({"1": 1, "2": 4, "3": 5}), encoding="utf-8")
     assert read.make_marks(wd) == [[1, 0.0], [5, 6.0]]
 
+def test_stash_previous_moves_only_a_broken_score(tmp_path):
+    # 書きかけで読めない見出しは history に移して雛形から作り直せるようにし、読める見出しは残す
+    wd = tmp_path / "w"
+    wd.mkdir()
+    (wd / "score.json").write_text('{"tempo": 120}', encoding="utf-8")
+    read.stash_previous(wd, print)
+    assert (wd / "score.json").exists() and not (wd / "history").exists()
+
+    for broken in ['{"tempo":120,', "[1, 2]"]:
+        (wd / "score.json").write_text(broken, encoding="utf-8")
+        logs = []
+        read.stash_previous(wd, logs.append)
+        assert not (wd / "score.json").exists()
+        assert broken in [p.read_text(encoding="utf-8") for p in (wd / "history").rglob("score.json")]
+        assert any("score.json" in m for m in logs)
+        for stamp in (wd / "history").iterdir():  # 同じ秒に 2 回移せるよう片付ける
+            stamp.rename(tmp_path / f"old_{len(list(tmp_path.iterdir()))}")
+
+
+def test_read_again_after_a_broken_score_launches_the_readers(tmp_path, monkeypatch):
+    wd = tmp_path / "w"
+    (wd / "pages").mkdir(parents=True)
+    (wd / "pages" / "pages.json").write_text(json.dumps({"pages": [{"page": 1, "start": 0, "frames": [1, 2]}]}))
+    (wd / "pages" / "index.md").write_text(
+        "| ページ | 時刻 | フレーム | 画像 | 注意 |\n|---|---|---|---|---|\n| 1 | 0:00〜0:02 | 1〜2 | p001_a.png | |\n"
+    )
+    (wd / "score.json").write_text('{"tempo":120,', encoding="utf-8")  # 前回の読み手が書きかけで止まった
+    launches = []
+
+    def stop_after_reading(prompt, **kwargs):
+        launches.append(kwargs["label"])
+        raise RuntimeError("ここで止める")
+
+    monkeypatch.setattr(read, "run_agent", stop_after_reading)
+    with pytest.raises(RuntimeError, match="ここで止める"):
+        read.read_all(wd, "claude", lambda _: None)
+    assert launches == ["A"]
+    assert json.loads((wd / "score.json").read_text(encoding="utf-8"))["tempo"] is None  # 雛形から作り直した
+
+
 def test_part_check_uses_time_signature_from_earlier_parts(tmp_path):
     from videotab import build
 

@@ -271,15 +271,30 @@ def make_marks(workdir: Path, notify=print) -> list[list[float]]:
 STASHED = ("parts", "readers", "resolve.json", "conflicts.json", "marks.json")
 
 
+def _score_broken(workdir: Path) -> bool:
+    """score.json（見出し）が JSON のオブジェクトとして読めないか。無いときは False。"""
+    path = workdir / "score.json"
+    if not path.exists():
+        return False
+    try:
+        return not isinstance(read_json(path), dict)
+    except ValueError:  # 壊れた JSON・文字コードの誤り・大きすぎるファイル
+        return True
+
+
 def stash_previous(workdir: Path, log) -> None:
     """前回の読み取り結果を history/ に移す（読み直しで前の結果を混ぜない。消しはしない）。
 
+    見出しの score.json は読めるなら残し、書きかけなどで読めないときだけ移す（雛形から作り直せるように）。
     移すものはリンクをたどらずに選び（先の無いリンクも移す）、リンクはリンクのまま移す。
     history が作業フォルダの外を指していれば断る。
     """
     root = confine.root_of(workdir)
+    broken_score = _score_broken(workdir)
     with inside.open_dir(root) as top:
         olds = [name for name in STASHED if inside.exists(top, name)]
+        if broken_score:
+            olds.append("score.json")
         if not olds:
             return
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -289,6 +304,8 @@ def stash_previous(workdir: Path, log) -> None:
                 for name in olds:
                     inside.move(top, name, dest)
     log(f"前回の読み取り結果を history/{stamp} に移しました")
+    if broken_score:
+        log(f"score.json（見出し）が読めなかったので history/{stamp} に移し、雛形から作り直します")
 
 
 def read_all(workdir: Path, engine: str, log, *, settings=None, on_actual=None, cancel=None) -> dict:
