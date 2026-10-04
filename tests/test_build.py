@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from videotab import build, verify
 from videotab.render import render_html, tuning_label
 from videotab.workdir import frame_name, parse_frame_name
@@ -79,6 +81,31 @@ def test_build_stops_on_missing_bars_check_errors_and_missing_tempo(tmp_path, ca
     assert build.run_build(wd2) == 1
     assert "tempo" in capsys.readouterr().out
     assert json.loads((wd2 / "score.json").read_text(encoding="utf-8"))["tempo"] is None
+
+
+def test_bar_number_is_limited(tmp_path, capsys):
+    # 大きな小節番号が 1 つあると、抜けている小節の一覧がその数だけ膨らむ
+    wd = setup_work(tmp_path)
+    write(wd / "parts" / "part_A.json", {"1": "r.1", str(build.MAX_BAR): "r.1"})
+    assert max(build.load_part(wd / "parts" / "part_A.json")) == build.MAX_BAR
+    write(wd / "parts" / "part_A.json", {"1": "r.1", "99999999": "r.1"})
+    for call in (lambda: build.load_part(wd / "parts" / "part_A.json"), lambda: build.run_build(wd),
+                 lambda: build.run_check(wd / "parts" / "part_A.json")):  # fmt: skip
+        with pytest.raises(SystemExit, match="小節番号 99999999 が大きすぎます（9999 まで）"):
+            call()
+    assert not (wd / "song.html").exists()
+
+
+def test_huge_json_is_not_loaded(tmp_path, monkeypatch):
+    from videotab import workdir
+
+    wd = setup_work(tmp_path)
+    write(wd / "parts" / "part_A.json", {"1": "r.1"})
+    monkeypatch.setattr(workdir, "MAX_JSON_BYTES", 5)
+    with pytest.raises(ValueError, match="part_A.json が大きすぎます"):
+        workdir.read_json(wd / "parts" / "part_A.json")
+    with pytest.raises(ValueError, match="meta.json が大きすぎます"):
+        workdir.load_meta(wd)
 
 
 def test_title_quotes_do_not_break_alphatex(tmp_path):

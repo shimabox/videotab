@@ -112,6 +112,7 @@ BAR_META_ARITY = {"ro": 0, "rc": 1, "ae": 1, "tempo": None, "ts": None, "section
                   "jump": 1, "ft": 0, "simile": 1, "tf": 1, "accidentals": 1}  # fmt: skip
 META_ORDER = ["tempo", "ts", "ro", "rc", "ae"]
 VALID_DURATIONS = {1, 2, 4, 8, 16, 32, 64}
+MAX_REPEAT = 256  # 拍の繰り返し（*N）の上限。64 分音符で 4 小節ぶん。これより多ければ読み違いとして断る
 DEFAULT_TUPLET_DENOM = {3: 2, 5: 4, 6: 4, 7: 4, 9: 8, 10: 8, 11: 8, 12: 8}
 
 TOKEN = re.compile(
@@ -509,7 +510,10 @@ def parse_bar(text: str, default_duration: int = 4) -> tuple[Bar, int]:
         repeat = 1
         if (t := toks.peek()) and t[0] == "star":
             toks.next()
-            repeat = int(t[1][1:])
+            digits = t[1][1:]
+            if len(digits) > 3 or not 1 <= int(digits) <= MAX_REPEAT:
+                raise ParseError(f"拍の繰り返し *{digits[:8]} が多すぎます（*1〜*{MAX_REPEAT}）")
+            repeat = int(digits)
         duration = beat_duration
         for _ in range(repeat):
             beats.append(Beat(notes, rest, beat_duration, effects, bare, effects_span, effect_items, unread))
@@ -573,7 +577,7 @@ def check_bars(
         prev_number = n
         try:
             bar, duration = parse_bar(bars[n], duration)
-        except ParseError as e:
+        except ValueError as e:  # ParseError と、数字として読めない値（桁が多すぎる数字など）
             issues.append(Issue(n, "error", f"読めません: {e}"))
             prev_beat, prev_unknown = None, True
             continue

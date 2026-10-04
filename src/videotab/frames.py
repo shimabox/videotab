@@ -14,6 +14,7 @@ from videotab.add import INPUT_LIMITS, find_video
 from videotab.workdir import frame_name, load_meta, parse_frame_name, save_meta
 
 IMAGE_EXTS = (".png", ".jpg", ".jpeg")
+MAX_IMAGE_BYTES = 64 * 1024 * 1024  # 取り込む画像 1 枚の大きさの上限（64 MB。ZIP は展開後の大きさ）
 
 
 def ffmpeg_bin() -> str:
@@ -100,10 +101,19 @@ def import_folder(workdir: Path, src: Path, fps: float = 1.0, force: bool = Fals
                  and not Path(m.filename).name.startswith(".") and "__MACOSX" not in m.filename),
                 key=lambda m: Path(m.filename).name,
             )  # fmt: skip
+            # ZIP は、展開後の大きさ（file_size）を読む前に確かめる。zf.read が返すのはその大きさまで
+            _check_sizes((Path(m.filename).name, m.file_size) for m in members)
             sources = [(Path(m.filename).name, (lambda m=m: zf.read(m))) for m in members]
             return _import(workdir, src, sources, fps, force)
     files = sorted(p for p in src.iterdir() if p.suffix.lower() in IMAGE_EXTS)
+    _check_sizes((p.name, p.stat().st_size) for p in files)
     return _import(workdir, src, [(p.name, p.read_bytes) for p in files], fps, force)
+
+
+def _check_sizes(sizes) -> None:
+    for name, size in sizes:
+        if size > MAX_IMAGE_BYTES:
+            raise SystemExit(f"{name} が大きすぎます（画像 1 枚は {MAX_IMAGE_BYTES // 1024**2} MB まで）")
 
 
 def _import(workdir: Path, src: Path, sources, fps: float, force: bool) -> int:

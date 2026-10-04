@@ -104,6 +104,17 @@ def test_check_reports_unreadable_bar_and_rest_before_tie():
     assert (3, "error") in msgs  # 読めない
 
 
+def test_beat_repeat_is_limited_and_huge_numbers_do_not_crash_the_check():
+    assert len(parse_bar("r.16 *16")[0].beats) == 16
+    for tex in ("r.4 *100000", "r.4 *0", "r.4 *" + "9" * 5000):
+        with pytest.raises(ParseError, match="拍の繰り返し"):
+            parse_bar(tex)
+    # 桁が多すぎて数字にできない値も、例外で止まらず「読めません」になる
+    issues, parsed = check_bars({1: "r.4 *100000", 2: "r." + "9" * 5000, 3: "r.1"})
+    assert [(i.bar, i.level) for i in issues if i.level == "error"] == [(1, "error"), (2, "error")]
+    assert sorted(parsed) == [3]
+
+
 def test_full_bar_rest_fits_any_time_signature():
     issues, parsed = check_bars({1: "\\ts 3 4 r.1", 2: "r.2 {d}", 3: "\\ts 6 8 r.1"})
     assert issues == []

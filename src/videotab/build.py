@@ -17,6 +17,7 @@ from videotab.render import render_html
 from videotab.workdir import create_json, load_meta, read_json, write_json
 
 DEFAULT_TUNING = "e4 b3 g3 d3 a2 e2"
+MAX_BAR = 9999  # 小節番号の上限。大きな番号が 1 つあると、抜けている小節の一覧がその数だけ膨らむ
 
 
 def norm(tex: str) -> str:
@@ -47,7 +48,10 @@ def load_part(path: Path) -> dict[int, str]:
     data = read_json(path)
     if not isinstance(data, dict):
         raise SystemExit(f"{path}: {{\"小節番号\": \"alphaTex\"}} の形ではありません")
-    return {int(k): str(v) for k, v in data.items()}
+    bars = {int(k): str(v) for k, v in data.items()}
+    if bars and max(bars) > MAX_BAR:
+        raise SystemExit(f"{path}: 小節番号 {max(bars)} が大きすぎます（{MAX_BAR} まで）")
+    return bars
 
 
 def part_files(workdir: Path) -> list[Path]:
