@@ -61,6 +61,8 @@ DELETING = ".deleting-"  # 消している途中の曲のフォルダ名の頭�
 # 属性も同じ値にする
 FILES_SANDBOX = "allow-scripts allow-downloads allow-modals allow-popups allow-popups-to-escape-sandbox"
 FILES_CSP = f"sandbox {FILES_SANDBOX}"
+# 画面そのものは、ほかのページに埋め込ませない（透明にした画面を重ねて、ボタンを押させないように）
+PAGE_HEADERS = {"Content-Security-Policy": "frame-ancestors 'none'", "X-Frame-Options": "DENY"}
 
 
 class App:
@@ -366,7 +368,7 @@ class App:
     def list_jobs(self) -> list[dict]:
         out = []
         for d in self.root.iterdir():
-            if not d.is_dir() or not ID_PATTERN.match(d.name):
+            if not d.is_dir() or not ID_PATTERN.fullmatch(d.name):
                 continue
             meta = load_meta(d)
             job = Job(d).load() if (d / "job.json").exists() else {}
@@ -445,7 +447,7 @@ class App:
 
         作業フォルダの中だけをたどって確かめる（外を指すリンクは、途中のフォルダも含めて返さない）。
         """
-        if not ID_PATTERN.match(job_id):
+        if not ID_PATTERN.fullmatch(job_id):
             return None
         base = (self.root / job_id).resolve()
         try:
@@ -627,7 +629,7 @@ def make_handler(app: App):
                 return self._error(HTTPStatus.FORBIDDEN, "127.0.0.1 か localhost で開いてください")
             path = unquote(urlparse(self.path).path)
             if path == "/":
-                return self._send(200, page, "text/html; charset=utf-8")
+                return self._send(200, page, "text/html; charset=utf-8", PAGE_HEADERS)
             if path == "/favicon.ico":  # タブ譜のページを単独で開いたときにブラウザが求める
                 self.send_response(HTTPStatus.NO_CONTENT)
                 self.end_headers()
@@ -644,7 +646,7 @@ def make_handler(app: App):
                 )
             if path.startswith("/api/jobs/"):
                 job_id = path.removeprefix("/api/jobs/")
-                if not ID_PATTERN.match(job_id):
+                if not ID_PATTERN.fullmatch(job_id):
                     return self._error(404, "ありません")
                 try:
                     return self._json(app.detail(job_id))
@@ -732,7 +734,7 @@ def make_handler(app: App):
             if not isinstance(body, dict):
                 return self._error(400, "JSON の形が違います")
             job_id = path.removeprefix("/api/jobs/").removesuffix(f"/{action}")
-            if not ID_PATTERN.match(job_id):
+            if not ID_PATTERN.fullmatch(job_id):
                 return self._error(404, "ありません")
             result = {"id": job_id}
             try:

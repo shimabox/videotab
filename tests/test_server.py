@@ -705,6 +705,23 @@ def test_every_response_is_not_sniffed_and_grants_no_cors(served):
     assert (s.root / JOB / "job.json").exists()
 
 
+def test_screen_cannot_be_framed_by_other_pages(served):
+    # ほかのサイトが画面を透明な iframe に入れて、ボタンを押させること（クリックジャッキング）を防ぐ
+    status, headers, _ = request(served.base + "/")
+    assert status == 200
+    assert headers.get_all("Content-Security-Policy") == ["frame-ancestors 'none'"]
+    assert headers.get_all("X-Frame-Options") == ["DENY"]
+
+
+def test_id_with_trailing_newline_is_not_an_id(served):
+    s = served
+    saved_job(s.root)
+    assert request(f"{s.base}/api/jobs/{JOB}")[0] == 200
+    for path in (f"/api/jobs/{JOB}%0A", f"/files/{JOB}%0A/{JOB}.alphatex"):
+        assert request(s.base + path)[0] == 404, path
+    assert call(f"{s.base}/api/jobs/{JOB}%0A/retry", {})[0] == 404
+
+
 def test_result_iframe_is_sandboxed_like_files():
     import re
     from importlib import resources

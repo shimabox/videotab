@@ -159,6 +159,10 @@
 - 画面と同じ出どころ（`allow-same-origin`）、フォームの送信（`allow-forms`）、最上位の画面の移動（`allow-top-navigation` など）は許しません。そのため、`/files/` のページは、画面の中の iframe・別のタブ・URL の直接入力のどの開き方でも、画面とは別の出どころ（opaque origin）で動きます。
 - 画面のすべての応答に `X-Content-Type-Options: nosniff` を付け、ブラウザに中身の種類を推測させません。
 
+### 画面そのものは埋め込ませない
+
+画面（`/`）の応答には `Content-Security-Policy: frame-ancestors 'none'` と `X-Frame-Options: DENY` を付けます。ほかのサイトのページが画面を透明な iframe に入れて、利用者にボタンを押させることを防ぎます。
+
 ### /files/ のページからできないこと
 
 - 曲の追加・やり直し・削除。ページからの POST / DELETE は `Origin` が `null` になるので、画面からの操作として受け付けません。画面からの操作の見出し（`X-Videotab`）を付けるには、ブラウザが先に事前確認（OPTIONS）を送りますが、画面はこれに応じないので、本番のリクエストは送られません。画面はどの応答にも `Access-Control-Allow-*` を付けません。
