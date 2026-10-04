@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import threading
 import types
 import urllib.error
@@ -8,7 +9,7 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-from videotab import pipeline, server
+from videotab import build, pipeline, server
 
 
 @pytest.fixture
@@ -99,12 +100,12 @@ def test_server_serves_only_files_inside_the_work_folder(running_server):
     base, root, _ = running_server
     wd = root / "abcdefghijk"
     wd.mkdir()
-    (wd / "abcdefghijk.html").write_text("<p>tab</p>", encoding="utf-8")
-    (root / "secret.html").write_text("secret", encoding="utf-8")
+    (wd / "notes.md").write_text("# notes", encoding="utf-8")
+    (root / "secret.md").write_text("secret", encoding="utf-8")
     (wd / "meta.json").write_text("{}", encoding="utf-8")
-    assert call(base + "/files/abcdefghijk/abcdefghijk.html") == (200, b"<p>tab</p>")
-    assert call(base + "/files/abcdefghijk/../secret.html")[0] == 404
-    assert call(base + "/files/abcdefghijk/%2e%2e/secret.html")[0] == 404
+    assert call(base + "/files/abcdefghijk/notes.md") == (200, b"# notes")
+    assert call(base + "/files/abcdefghijk/../secret.md")[0] == 404
+    assert call(base + "/files/abcdefghijk/%2e%2e/secret.md")[0] == 404
     assert call(base + "/files/abcdefghijk/meta.json")[0] == 404
 
 def test_server_worker_survives_unexpected_exit(tmp_path, monkeypatch, fake_probe):
@@ -545,15 +546,14 @@ def grants_cors(headers):
     return [k for k in headers.keys() if k.lower().startswith("access-control-allow-")]
 
 
-# 読み手が置けるページの例。中身は返すだけで、テストでは動かさない
+# 読み手が置けるページの例。返さないことを確かめるだけで、テストでは動かさない
 EVIL = b'<script>fetch("/api/jobs/abcdefghijk", {method: "DELETE", headers: {"X-Videotab": "1"}})</script>'
+TEX = '\\title "曲"\n\\tempo 120\n.\n\\tuning e4 b3 g3 d3 a2 e2\n\\ts 4 4\nr.1\n'
 SERVED_FILES = {
-    f"{JOB}.html": b"<p>tab</p>",
     "p001.png": b"\x89PNG\r\n\x1a\n",
     "f0001.jpg": b"\xff\xd8\xff\xe0",
-    f"{JOB}.alphatex": b"\\title t\n.\n",
+    f"{JOB}.alphatex": TEX.encode("utf-8"),
     "notes.md": b"# notes\n",
-    "evil.html": EVIL,
 }
 
 
@@ -565,9 +565,10 @@ def test_files_are_sandboxed_and_not_sniffed(served):
     assert server.FILES_CSP == (
         "sandbox allow-scripts allow-downloads allow-modals allow-popups allow-popups-to-escape-sandbox"
     )
-    for name, data in SERVED_FILES.items():
+    for name in [*SERVED_FILES, f"{JOB}.html"]:  # <ID>.html は、<ID>.alphatex から組み立てたページ
         status, headers, body = request(f"{s.base}/files/{JOB}/{name}")
-        assert (status, body) == (200, data), name
+        assert status == 200, name
+        assert name not in SERVED_FILES or body == SERVED_FILES[name], name
         assert headers.get_all("Content-Security-Policy") == [server.FILES_CSP], name
         assert headers.get_all("X-Content-Type-Options") == ["nosniff"], name
         assert grants_cors(headers) == [], name
@@ -576,6 +577,73 @@ def test_files_are_sandboxed_and_not_sniffed(served):
     assert tokens[0] == "sandbox" and "allow-scripts" in tokens
     for word in ("allow-same-origin", "allow-forms", "allow-top-navigation"):
         assert word not in server.FILES_CSP, word
+
+
+def test_tab_page_is_built_from_alphatex_and_stored_html_is_never_served(served):
+    """タブ譜のページは <ID>.alphatex から組み立てる。読み手が置いた HTML は、<ID>.html の名前でも返さない。"""
+    s = served
+    saved_job(s.root, status="failed")
+    wd = s.root / JOB
+    (wd / f"{JOB}.html").write_bytes(EVIL)
+    (wd / "evil.html").write_bytes(EVIL)
+    page_url = f"{s.base}/files/{JOB}/{JOB}.html"
+
+    def shown():
+        detail = json.loads(call(f"{s.base}/api/jobs/{JOB}")[1])["html"]
+        return detail, [j["html"] for j in json.loads(call(s.base + "/api/jobs")[1])["jobs"]]
+
+    # <ID>.alphatex が無ければ、<ID>.html があってもページは無い（画面も iframe を作らない）
+    assert request(page_url)[0] == 404 and shown() == (None, [None])
+    (wd / f"{JOB}.alphatex").write_text(TEX, encoding="utf-8")
+    status, headers, body = request(page_url)
+    page = body.decode("utf-8")
+    assert status == 200 and headers["Content-Type"] == "text/html; charset=utf-8"
+    assert EVIL not in body and "<title>曲 - videotab</title>" in page and "小節数: 1" in page
+    assert shown() == (f"{JOB}.html", [f"{JOB}.html"])
+    assert request(f"{s.base}/files/{JOB}/evil.html")[0] == 404  # ほかの .html は返さない
+    # 読み手が書いた alphaTex と meta.json は、ページの中で文字として扱う
+    (wd / f"{JOB}.alphatex").write_text(
+        '\\title "</title><script>alert(1)</script>"\n\\ts 4 4\n</script><script>alert(2)</script>\n', encoding="utf-8"
+    )
+    (wd / "meta.json").write_text(
+        json.dumps({"title": "<script>alert(3)</script>", "creator": "<img src=x>", "source_url": "javascript:alert(4)"}),
+        encoding="utf-8",
+    )
+    page = request(page_url)[2].decode("utf-8")
+    assert "<script>alert(" not in page and "<img src=x>" not in page and "javascript:" not in page
+    # 読めない meta.json・大きすぎる・UTF-8 でない alphaTex でも、保存された HTML には戻らない
+    (wd / "meta.json").write_text("[", encoding="utf-8")
+    assert request(page_url)[0] == 200
+    (wd / f"{JOB}.alphatex").write_bytes(b"\xff\xfe")
+    assert request(page_url)[0] == 404
+    (wd / f"{JOB}.alphatex").write_bytes(b" " * (server.MAX_TEX + 1))
+    assert request(page_url)[0] == 404
+
+
+def test_tab_page_is_the_same_as_the_built_html(served, capsys):
+    s = served
+    saved_job(s.root)
+    wd = s.root / JOB
+    (wd / "parts").mkdir()
+    (wd / "parts" / "part_A.json").write_text(json.dumps({"1": "r.1", "2": '(0.6{ch "A|m"}).1'}), encoding="utf-8")
+    (wd / "score.json").write_text(
+        json.dumps({"title": 'A "B" C', "tempo": 137.5, "capo": 2, "tuning": "d4 a3 f3 c3 g2 d2"}), encoding="utf-8"
+    )
+    (wd / "meta.json").write_text(
+        json.dumps({"id": JOB, "title": "Song", "creator": "Creator", "source_url": "https://example.com/v"}),
+        encoding="utf-8",
+    )
+    assert build.run_build(wd) == 0
+    built = (wd / f"{JOB}.html").read_text(encoding="utf-8")
+    assert '<h1 class="tm-title">A &#34;B&#34; C</h1>' in built
+    for text in ("Tempo: 137.5 BPM", "Tuning: D G C F A D", "Capo: 2", "小節数: 2", "（作成: Creator）"):
+        assert text in built, text
+    status, _, body = request(f"{s.base}/files/{JOB}/{JOB}.html")
+
+    def undated(page):
+        return re.sub(r"Generated \d{4}-\d\d-\d\d \d\d:\d\d:\d\d", "Generated", page)
+
+    assert status == 200 and undated(body.decode("utf-8")) == undated(built)
 
 
 def test_requests_from_sandboxed_page_are_refused(served):
@@ -598,7 +666,7 @@ def test_preflight_is_not_granted(served, path):
     """別の出どころから X-Videotab 付きで送る前の事前確認（OPTIONS）に応じない。"""
     s = served
     saved_job(s.root)
-    (s.root / JOB / f"{JOB}.html").write_text("<p>tab</p>", encoding="utf-8")
+    (s.root / JOB / f"{JOB}.alphatex").write_text(TEX, encoding="utf-8")
     ask = {"Origin": "null", "Access-Control-Request-Method": "DELETE", "Access-Control-Request-Headers": "content-type, x-videotab"}
     status, headers, _ = request(s.base + path, "OPTIONS", ask)
     assert not 200 <= status < 300
@@ -609,7 +677,7 @@ def test_preflight_is_not_granted(served, path):
 def test_every_response_is_not_sniffed_and_grants_no_cors(served):
     s = served
     saved_job(s.root)
-    (s.root / JOB / f"{JOB}.html").write_text("<p>tab</p>", encoding="utf-8")
+    (s.root / JOB / f"{JOB}.alphatex").write_text(TEX, encoding="utf-8")
     page = {"Origin": "null"}
     cases = [
         ("GET", "/", None, {}, 200),

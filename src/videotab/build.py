@@ -266,6 +266,76 @@ def alphatex_document(bars: dict[int, str], score: dict) -> str:
     return "\n".join(head + [" |\n".join(bars[n] for n in sorted(bars))]) + "\n"
 
 
+HEAD_LINES = 8  # alphatex_document が書く見出しの行数の上限（title・subtitle・tab・tempo・.・tuning・capo・ts）
+HEAD_END = re.compile(r"\\ts \d+ \d+")
+
+
+def document_head(tex: str) -> tuple[dict[str, str], str]:
+    """alphatex_document が書いた文書を、見出し（title・tempo・tuning・capo の値）と小節の並びに分ける。
+
+    見出しは先頭から \\ts の行まで。その形でなければ、見出しは空にして、全体を小節の並びとして返す。
+    title は、tex_string が全角に置き換えた " と \\ を元に戻す。
+    """
+    lines = tex.split("\n")
+    end = next((i for i, line in enumerate(lines[:HEAD_LINES]) if HEAD_END.fullmatch(line)), None)
+    if end is None:
+        return {}, tex
+    head: dict[str, str] = {}
+    for line in lines[:end]:
+        key, _, value = line.partition(" ")
+        if key in ("\\title", "\\tempo", "\\tuning", "\\capo"):
+            head.setdefault(key[1:], value)
+    title = head.get("title")
+    if title is not None:
+        if len(title) >= 2 and title[0] == title[-1] == '"':
+            title = title[1:-1]
+        head["title"] = title.replace("＂", '"').replace("＼", "\\")
+    return head, "\n".join(lines[end + 1 :])
+
+
+def count_bars(body: str) -> int:
+    """小節の並びにある小節の数（"..." の外の | で区切った数）。"""
+    if not body.strip():
+        return 0
+    bars, quoted = 1, False
+    for ch in body:
+        if ch == '"':
+            quoted = not quoted
+        elif ch == "|" and not quoted:
+            bars += 1
+    return bars
+
+
+def _number(text: str | None, kind=float):
+    try:
+        return kind(float(text))
+    except (TypeError, ValueError, OverflowError):
+        return kind(0)
+
+
+def page_html(tex: str, meta: dict, *, name: str, generated_at: str | None = None) -> str:
+    """alphaTex の文書 tex から作るタブ譜のページ。
+
+    build が書く <ID>.html と、画面が /files/ で返すページの両方をこれで作る（画面は保存された HTML を
+    返さず、<ID>.alphatex から要求のたびに組み立てる）。題名・テンポ・チューニング・カポ・小節の数は
+    tex の見出しから、元動画の情報は meta（meta.json）から取る。tex も meta も読み手が書けるので、
+    読めない値は既定の値にする。name は見出しに題名が無いときの題名（作業フォルダの名前）。
+    """
+    head, body = document_head(tex)
+    return render_html(
+        tex,
+        title=head.get("title") or name,
+        tempo=_number(head.get("tempo")),
+        tuning=head.get("tuning") or DEFAULT_TUNING,
+        capo=_number(head.get("capo"), int),
+        bar_count=count_bars(body),
+        source_url=source_link(meta),
+        source_title=meta.get("title"),
+        source_creator=video_creator(meta),
+        generated_at=generated_at,
+    )
+
+
 def run_build(workdir: Path, allow_check_errors: bool = False) -> int:
     merged = merge(workdir)
     score = load_score(workdir)
@@ -314,19 +384,8 @@ def run_build(workdir: Path, allow_check_errors: bool = False) -> int:
         print(f"拍の後ろに書かれた音の効果を音の中へ付け直しました: {fixed.moved} 件"
               + (f"（休符の拍から外したもの {fixed.dropped} 件）" if fixed.dropped else ""))
     tex = alphatex_document(bars, score)
-    meta = load_meta(workdir)
     name = workdir.name
-    html = render_html(
-        tex,
-        title=score["title"],
-        tempo=float(score["tempo"]),
-        tuning=score["tuning"],
-        capo=int(score.get("capo") or 0),
-        bar_count=len(merged.bars),
-        source_url=source_link(meta),
-        source_title=meta.get("title"),
-        source_creator=video_creator(meta),
-    )
+    html = page_html(tex, load_meta(workdir), name=name)
     out = workdir / f"{name}.html"
     with inside.open_dir(root) as top:
         inside.write_text(top, f"{name}.alphatex", tex, notify=print)

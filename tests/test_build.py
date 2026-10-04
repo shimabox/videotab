@@ -87,6 +87,33 @@ def test_title_quotes_do_not_break_alphatex(tmp_path):
     assert tex.splitlines()[0] == '\\title "A ＂B＂ C"'
 
 
+def test_document_head_reads_back_what_alphatex_document_wrote():
+    score = {"title": 'A "B" \\ C', "subtitle": "副題", "tab_by": "作成者", "tempo": 137.5, "capo": 2,
+             "time_signature": [6, 8], "tuning": "d4 a3 f3 c3 g2 d2"}
+    bars = {1: "\\tempo 90 r.2 {d}", 2: '(0.6{ch "A|m"}).2 {d}', 3: "\\capo 5"}
+    head, body = build.document_head(build.alphatex_document(bars, score))
+    assert head == {"title": 'A "B" \\ C', "tempo": "137.5", "tuning": "d4 a3 f3 c3 g2 d2", "capo": "2"}
+    assert body == '\\tempo 90 r.2 {d} |\n(0.6{ch "A|m"}).2 {d} |\n\\capo 5\n'
+    assert build.count_bars(body) == 3  # "..." の中の | は区切りに数えない
+    plain = {"title": "曲", "tempo": 120, "time_signature": [4, 4], "tuning": "e4 b3 g3 d3 a2 e2"}
+    assert build.document_head(build.alphatex_document({1: "r.1"}, plain))[0] == {
+        "title": "曲", "tempo": "120", "tuning": "e4 b3 g3 d3 a2 e2"
+    }
+
+
+def test_page_html_falls_back_when_the_document_has_no_usable_head():
+    # 見出しの形でない文書（読み手が書き換えた場合など）は、全体を小節の並びとして扱う
+    assert build.document_head("r.1 |\nr.1\n") == ({}, "r.1 |\nr.1\n")
+    assert build.count_bars("") == 0 and build.count_bars("\n") == 0
+    html = build.page_html("r.1 |\nr.1\n", {}, name="song")
+    assert "<title>song - videotab</title>" in html and "Tempo: 0 BPM" in html
+    assert "Tuning: E A D G B E" in html and "Capo: 0" in html and "小節数: 2" in html
+    # 数として読めない値は 0 にする
+    html = build.page_html('\\title ""\n\\tempo fast\n\\capo 1e999\n\\ts 4 4\nr.1\n', {"title": ["x"]}, name="song")
+    assert "<title>song - videotab</title>" in html and "Tempo: 0 BPM" in html and "Capo: 0" in html
+    assert "Capo: 2" in build.page_html("\\capo 2.0\n\\ts 4 4\nr.1\n", {}, name="song")  # score.json の capo が 2.0 のとき
+
+
 LINK = '<a href="https://example.com/v" target="_blank" rel="noopener noreferrer">Song</a>'
 
 
