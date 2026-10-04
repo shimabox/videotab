@@ -28,6 +28,7 @@ WORK_ROOT = Path("work")
 # 作業フォルダの ID（work/ の直下の名前）。英数字で始まるので、コマンドの引数でオプションと紛れない。
 # 置き場の一時フォルダや消している途中のフォルダ（. で始まる）は合わないので、一覧に出ない
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+MAX_JSON_BYTES = 32 * 1024 * 1024  # 読む JSON の大きさの上限（32 MB）。作業フォルダの JSON は読み手も書ける
 FRAME_NAME = re.compile(r"^(\d+)_(\d+)m(\d+)s(\d{3})\.(png|jpg)$")
 
 
@@ -50,7 +51,16 @@ def load_meta(workdir: Path) -> dict:
     path = confine.guard(workdir / "meta.json")
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _load_json(path)
+
+
+def _load_json(path: Path):
+    """JSON のファイルを読む。MAX_JSON_BYTES を超えるものは、読み込まずに ValueError（壊れた JSON と同じ扱い）。"""
+    with open(path, "rb") as f:
+        raw = f.read(MAX_JSON_BYTES + 1)
+    if len(raw) > MAX_JSON_BYTES:
+        raise ValueError(f"{path.name} が大きすぎます（{MAX_JSON_BYTES // 1024**2} MB まで）")
+    return json.loads(raw.decode("utf-8"))
 
 
 def save_meta(workdir: Path, meta: dict, *, notify=print) -> None:
@@ -81,7 +91,7 @@ def create_json(path: Path, data, *, root: Path) -> None:
 
 
 def read_json(path: Path):
-    return json.loads(confine.guard(path).read_text(encoding="utf-8"))
+    return _load_json(confine.guard(path))
 
 
 @dataclass(frozen=True)

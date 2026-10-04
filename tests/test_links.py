@@ -748,6 +748,29 @@ def test_import_folder_does_not_write_through_frames_link(ws, tmp_path, shape, c
     assert "frames がリンクだったので、リンクを消して作り直しました" in capsys.readouterr().out
 
 
+def test_import_refuses_oversized_images_before_reading_them(tmp_path, monkeypatch):
+    import zipfile
+
+    monkeypatch.setattr(frames, "MAX_IMAGE_BYTES", 100)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "0001_00m00s000.png").write_bytes(b"x" * 100)
+    (src / "0002_00m01s000.png").write_bytes(b"x" * 101)
+    packed = tmp_path / "frames.zip"
+    with zipfile.ZipFile(packed, "w", zipfile.ZIP_DEFLATED) as zf:  # 圧縮後は小さいが、展開すると上限を超える
+        zf.writestr("0001_00m00s000.png", b"x" * 100)
+        zf.writestr("0002_00m01s000.png", b"\0" * 5000)
+    assert packed.stat().st_size < 400
+    for source in (src, packed):
+        wd = tmp_path / f"wd-{source.suffix or 'dir'}"
+        with pytest.raises(SystemExit, match="0002_00m01s000.png が大きすぎます"):
+            frames.import_folder(wd, source)
+        assert not (wd / "frames").exists()  # 何も書かずに断る
+    (src / "0002_00m01s000.png").write_bytes(b"x" * 100)
+    (tmp_path / "ok").mkdir()
+    assert frames.import_folder(tmp_path / "ok", src) == 2
+
+
 def test_frames_refuses_video_linking_outside(ws, monkeypatch):
     wd, out = video_work(ws)
     before = snapshot(out)

@@ -11,12 +11,16 @@ POST /api/jobs/<ID>/info は、曲の情報（題名・作成者・元動画の�
 job.json に書き、タブ譜の組み立てより前の段が済んだ曲だけをタブ譜の組み立ての段から組み立て直す
 （読み取りはしない）。
 
-/files/ は作業フォルダの中のファイル（タブ譜のページなど）を返す。作業フォルダには読み取りの
-エージェントも書けるので、/files/ の応答には CSP の sandbox を付け、画面の iframe にも同じ値の
-sandbox 属性を付ける。allow-same-origin を与えないので、ページは画面とは別の出どころ（opaque
-origin）で動く。そこからの POST / DELETE は Origin が null になって _from_page で断られ、別の
-出どころからの X-Videotab 付きのリクエストは事前確認（OPTIONS）に応じないので送られない。
-どの応答にも Access-Control-Allow-* は付けない。
+/files/ は作業フォルダの中のファイル（画像など）と、タブ譜のページを返す。作業フォルダには読み取りの
+エージェントも書けるので、保存された HTML は返さない。タブ譜のページ（/files/<ID>/<ID>.html）は、
+<ID>.alphatex をデータとして読み、本体のテンプレートから要求のたびに組み立てる（build.page_html）。
+読み手が <ID>.html やほかの .html を置いても、スクリプトの動くページとしては返らない。
+
+/files/ の応答には CSP の sandbox を付け、画面の iframe にも同じ値の sandbox 属性を付ける。
+allow-same-origin を与えないので、ページは画面とは別の出どころ（opaque origin）で動く。そこからの
+POST / DELETE は Origin が null になって _from_page で断られ、別の出どころからの X-Videotab 付きの
+リクエストは事前確認（OPTIONS）に応じないので送られない。どの応答にも Access-Control-Allow-* は
+付けない。
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ import shutil
 import stat
 import threading
 import webbrowser
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -40,11 +45,13 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from videotab import add, agent_settings, confine, inside, notes_md
 from videotab.agent import DEFAULT_ENGINE, ENGINES, available_engines
-from videotab.build import retitle_score, source_link, video_creator
+from videotab.build import page_html, retitle_score, source_link, video_creator
 from videotab.pipeline import STEP_NAMES, Busy, Job, finished_at, rebuildable, retitle, shown_steps
-from videotab.workdir import ID_PATTERN, load_meta, read_json, save_meta, write_json
+from videotab.workdir import ID_PATTERN, MAX_JSON_BYTES, load_meta, read_json, save_meta, write_json
 
-SERVED_SUFFIXES = {".html", ".png", ".jpg", ".alphatex", ".md"}
+# /files/ がそのまま返すファイルの種類。.html は入れない（タブ譜のページは App.page が組み立てる）
+SERVED_SUFFIXES = {".png", ".jpg", ".alphatex", ".md"}
+MAX_TEX = 4 * 1024 * 1024  # タブ譜のページに組み立てる <ID>.alphatex の上限（4 MB）
 MAX_JSON = 1024 * 1024  # 止める・やり直す・曲の情報の JSON の本文の上限（1 MB）
 INFO_KEYS = ("title", "creator", "source_url")  # 曲の情報の本文に必ず入れる項目
 DELETING = ".deleting-"  # 消している途中の曲のフォルダ名の頭（ID_PATTERN に合わないので一覧に出ない）
@@ -54,6 +61,8 @@ DELETING = ".deleting-"  # 消している途中の曲のフォルダ名の頭�
 # 属性も同じ値にする
 FILES_SANDBOX = "allow-scripts allow-downloads allow-modals allow-popups allow-popups-to-escape-sandbox"
 FILES_CSP = f"sandbox {FILES_SANDBOX}"
+# 画面そのものは、ほかのページに埋め込ませない（透明にした画面を重ねて、ボタンを押させないように）
+PAGE_HEADERS = {"Content-Security-Policy": "frame-ancestors 'none'", "X-Frame-Options": "DENY"}
 
 
 class App:
@@ -359,21 +368,21 @@ class App:
     def list_jobs(self) -> list[dict]:
         out = []
         for d in self.root.iterdir():
-            if not d.is_dir() or not ID_PATTERN.match(d.name):
+            if not d.is_dir() or not ID_PATTERN.fullmatch(d.name):
                 continue
             meta = load_meta(d)
             job = Job(d).load() if (d / "job.json").exists() else {}
-            html = d / f"{d.name}.html"
+            html = _page_name(d)
             if not job and not meta:
                 continue
-            status = job.get("status") or ("done" if html.exists() else "idle")
+            status = job.get("status") or ("done" if html else "idle")
             out.append(
                 {
                     "id": d.name,
                     "title": job.get("title") or meta.get("title") or d.name,
                     "status": self._live_status(d.name, status),
                     "updated": job.get("updated") or _mtime(d),
-                    "html": html.name if html.exists() else None,
+                    "html": html,
                 }
             )
         return sorted(out, key=lambda j: j["updated"] or "", reverse=True)
@@ -394,7 +403,7 @@ class App:
         job = Job(d)
         data = job.load()
         meta = load_meta(d)
-        html = d / f"{job_id}.html"
+        html = _page_name(d)
         notes = {}
         notes_path = d / "readers" / "notes.json"
         if notes_path.exists():
@@ -403,7 +412,7 @@ class App:
             for p in sorted((d / "readers").glob("notes_*.md")) if (d / "readers").exists() else []:
                 notes[p.stem.removeprefix("notes_")] = p.read_text(encoding="utf-8")
         engine = data.get("engine") or DEFAULT_ENGINE
-        status = self._live_status(job_id, data.get("status") or ("done" if html.exists() else "idle"))
+        status = self._live_status(job_id, data.get("status") or ("done" if html else "idle"))
         return {
             "id": job_id,
             "title": data.get("title") or meta.get("title") or job_id,
@@ -423,7 +432,7 @@ class App:
             "updated": data.get("updated"),
             # 画面に出す状態が終わった（done / failed）ときだけ。実行中・順番待ちに変わった曲では出さない
             "finished": finished_at(data) if status in ("done", "failed") else None,
-            "html": html.name if html.exists() else None,
+            "html": html,
             "log": job.log_tail(300),
             "notes": notes,
             # 報告を Markdown として解析した木。文字列でない値（手で書き換えた場合）の担当は入れず、
@@ -433,34 +442,79 @@ class App:
             else {},
         }
 
-    def file_path(self, job_id: str, rel: str) -> Path | None:
-        if not ID_PATTERN.match(job_id):
+    def file_path(self, job_id: str, rel: str) -> tuple[Path, Path] | None:
+        """/files/ で返すファイルの（作業フォルダ, 中のリンクをたどり終えたパス）。返さないものは None。
+
+        作業フォルダの中だけをたどって確かめる（外を指すリンクは、途中のフォルダも含めて返さない）。
+        """
+        if not ID_PATTERN.fullmatch(job_id):
             return None
         base = (self.root / job_id).resolve()
-        target = (base / rel).resolve()
-        if base not in target.parents or target.suffix.lower() not in SERVED_SUFFIXES or not target.is_file():
+        try:
+            target = confine.guard(base / rel, root=base)
+        except (OSError, SystemExit, ValueError):  # 外を指す（confine.Outside）・調べられない・パスにできない
             return None
-        return target
+        if target == base or target.suffix.lower() not in SERVED_SUFFIXES:
+            return None
+        return base, target
 
     def read_file(self, job_id: str, rel: str) -> tuple[Path, bytes] | None:
         """/files/ で返すファイルの（パス, 中身）。返さないものは None。
 
-        resolve した先が作業フォルダの外なら返さない（外へのリンクは、途中のフォルダも含めて外になる）。
-        さらに、確かめた先をリンクをたどらずに開き、通常のファイルで、ほかの名前と中身を共有していない
-        （外のファイルとのハードリンクでない）ことを確かめてから、開いたものを読む。
+        作業フォルダの外を指すパスは返さない（外へのリンクは、途中のフォルダも含めて外になる）。
+        確かめたパスの親フォルダを、作業フォルダから 1 つずつリンクをたどらずに開いて足場にし、
+        そこから名前で開く（確かめたあとに途中のフォルダをリンクへ差し替えられても、外を読まない）。
+        開いたものが通常のファイルで、ほかの名前と中身を共有していない（外のファイルとのハードリンクで
+        ない）ことを確かめてから読む。
         """
-        target = self.file_path(job_id, rel)
-        if target is None:
+        found = self._read(job_id, rel)
+        return None if found is None else (found[0], found[2])
+
+    def _read(self, job_id: str, rel: str, limit: int | None = None) -> tuple[Path, os.stat_result, bytes] | None:
+        """read_file の中身。（パス, 開いたファイルの stat, 中身）を返す。limit を超える大きさなら None。"""
+        found = self.file_path(job_id, rel)
+        if found is None:
+            return None
+        base, target = found
+        try:
+            with inside.open_dir(base, target.parent.relative_to(base), create=False) as folder:
+                fd = os.open(target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder.fd)
+        except (OSError, SystemExit):  # 無い・リンクへ差し替えられた（confine.Outside）など
             return None
         try:
-            fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:  # フォルダも開けるので、読む前に種類を見る
+                return None
+            data = inside.read_up_to(fd, limit)
         except OSError:
             return None
-        with os.fdopen(fd, "rb") as f:
-            st = os.fstat(f.fileno())
-            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
-                return None
-            return target, f.read()
+        finally:
+            os.close(fd)
+        if limit is not None and len(data) > limit:
+            return None
+        return target, st, data
+
+    def page(self, job_id: str) -> bytes | None:
+        """タブ譜のページ（/files/<ID>/<ID>.html で返す中身）。組み立てられなければ None。
+
+        作業フォルダの <ID>.html は読み手も書けるので返さない。build が書いた <ID>.alphatex を
+        データとして読み、本体のテンプレートから組み立てる。元動画の情報は meta.json をリンクを
+        たどらずに読み、読めなければ出さない。作った日時は <ID>.alphatex の更新日時にする。
+        """
+        found = self._read(job_id, f"{job_id}.alphatex", limit=MAX_TEX)
+        if found is None:
+            return None
+        _, st, raw = found
+        try:
+            tex = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        try:
+            meta = _read_own_json(self.root / job_id, "meta.json") or {}
+        except InfoError:
+            meta = {}
+        made = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        return page_html(tex, meta, name=job_id, generated_at=made).encode("utf-8")
 
 
 class InfoError(RuntimeError):
@@ -485,14 +539,18 @@ def _read_own_json(workdir: Path, name: str) -> dict | None:
         if os.path.islink(workdir / name):
             raise InfoError(f"{name} がリンクなので、曲の情報を書き換えられません") from None
         raise InfoError(f"{name} を読めません（{inside.reason(e)}）") from None
-    with os.fdopen(fd, "rb") as f:
-        st = os.fstat(f.fileno())
-        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:  # フォルダも開けるので、読む前に種類を見る
             raise InfoError(f"{name} が通常のファイルではないので、曲の情報を書き換えられません")
         try:
-            raw = f.read()
+            raw = inside.read_up_to(fd, MAX_JSON_BYTES)
         except OSError as e:
             raise InfoError(f"{name} を読めません（{inside.reason(e)}）") from None
+    finally:
+        os.close(fd)
+    if len(raw) > MAX_JSON_BYTES:
+        raise InfoError(f"{name} が大きすぎるので、曲の情報を書き換えられません")
     try:
         data = json.loads(raw.decode("utf-8"))
     except ValueError:  # 壊れた JSON（JSONDecodeError）と、UTF-8 として読めないもの
@@ -522,9 +580,12 @@ def _size_text(n: int) -> str:
 
 
 def _mtime(d: Path) -> str:
-    from datetime import datetime
-
     return datetime.fromtimestamp(d.stat().st_mtime).isoformat(timespec="seconds")
+
+
+def _page_name(d: Path) -> str | None:
+    """作業フォルダ d のタブ譜のページの名前（<ID>.html）。もとになる <ID>.alphatex が無ければ None。"""
+    return f"{d.name}.html" if (d / f"{d.name}.alphatex").is_file() else None
 
 
 def make_handler(app: App):
@@ -577,7 +638,7 @@ def make_handler(app: App):
                 return self._error(HTTPStatus.FORBIDDEN, "127.0.0.1 か localhost で開いてください")
             path = unquote(urlparse(self.path).path)
             if path == "/":
-                return self._send(200, page, "text/html; charset=utf-8")
+                return self._send(200, page, "text/html; charset=utf-8", PAGE_HEADERS)
             if path == "/favicon.ico":  # タブ譜のページを単独で開いたときにブラウザが求める
                 self.send_response(HTTPStatus.NO_CONTENT)
                 self.end_headers()
@@ -594,7 +655,7 @@ def make_handler(app: App):
                 )
             if path.startswith("/api/jobs/"):
                 job_id = path.removeprefix("/api/jobs/")
-                if not ID_PATTERN.match(job_id):
+                if not ID_PATTERN.fullmatch(job_id):
                     return self._error(404, "ありません")
                 try:
                     return self._json(app.detail(job_id))
@@ -602,6 +663,13 @@ def make_handler(app: App):
                     return self._error(404, "ありません")
             if path.startswith("/files/"):
                 parts = path.removeprefix("/files/").split("/", 1)
+                # 読み手が中身を決められるので、どの開き方でも画面とは別の出どころで動かす
+                sandboxed = {"Content-Security-Policy": FILES_CSP}
+                if len(parts) == 2 and parts[1] == f"{parts[0]}.html":
+                    page_body = app.page(parts[0])  # 保存された HTML は返さず、<ID>.alphatex から組み立てる
+                    if page_body is None:
+                        return self._error(404, "ありません")
+                    return self._send(200, page_body, "text/html; charset=utf-8", sandboxed)
                 found = app.read_file(parts[0], parts[1]) if len(parts) == 2 else None
                 if found is None:
                     return self._error(404, "ありません")
@@ -609,8 +677,7 @@ def make_handler(app: App):
                 ctype = mimetypes.guess_type(target.name)[0] or "text/plain"
                 if ctype.startswith("text/"):
                     ctype += "; charset=utf-8"
-                # 読み手が中身を決められるので、どの開き方でも画面とは別の出どころで動かす
-                return self._send(200, body, ctype, {"Content-Security-Policy": FILES_CSP})
+                return self._send(200, body, ctype, sandboxed)
             return self._error(404, "ありません")
 
         def _from_page(self) -> bool:
@@ -676,7 +743,7 @@ def make_handler(app: App):
             if not isinstance(body, dict):
                 return self._error(400, "JSON の形が違います")
             job_id = path.removeprefix("/api/jobs/").removesuffix(f"/{action}")
-            if not ID_PATTERN.match(job_id):
+            if not ID_PATTERN.fullmatch(job_id):
                 return self._error(404, "ありません")
             result = {"id": job_id}
             try:

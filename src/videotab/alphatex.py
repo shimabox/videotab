@@ -112,6 +112,10 @@ BAR_META_ARITY = {"ro": 0, "rc": 1, "ae": 1, "tempo": None, "ts": None, "section
                   "jump": 1, "ft": 0, "simile": 1, "tf": 1, "accidentals": 1}  # fmt: skip
 META_ORDER = ["tempo", "ts", "ro", "rc", "ae"]
 VALID_DURATIONS = {1, 2, 4, 8, 16, 32, 64}
+MAX_REPEAT = 256  # 拍の繰り返し（*N）の上限。64 分音符で 4 小節ぶん。これより多ければ読み違いとして断る
+MAX_BEATS = 1024  # 1 小節の拍の数の上限（繰り返しを展開したあと。*N を何個も並べても、これを超えない）
+MAX_NOTES = 32  # 1 拍の音の数の上限
+MAX_TOTAL_BEATS = 200_000  # 1 回の検査で読む拍の数の上限（小節をまたいだ合計）
 DEFAULT_TUPLET_DENOM = {3: 2, 5: 4, 6: 4, 7: 4, 9: 8, 10: 8, 11: 8, 12: 8}
 
 TOKEN = re.compile(
@@ -473,6 +477,8 @@ def parse_bar(text: str, default_duration: int = 4) -> tuple[Bar, int]:
                 toks.next()
                 if t[0] != "word":
                     raise ParseError(f"( ) の中に {t[1]!r} があります")
+                if len(notes) >= MAX_NOTES:
+                    raise ParseError(f"1 拍の音が多すぎます（{MAX_NOTES} まで）")
                 notes.append(_parse_note(t[1], toks))
             toks.next()
             if not notes:
@@ -509,7 +515,12 @@ def parse_bar(text: str, default_duration: int = 4) -> tuple[Bar, int]:
         repeat = 1
         if (t := toks.peek()) and t[0] == "star":
             toks.next()
-            repeat = int(t[1][1:])
+            digits = t[1][1:]
+            if len(digits) > 3 or not 1 <= int(digits) <= MAX_REPEAT:
+                raise ParseError(f"拍の繰り返し *{digits[:8]} が多すぎます（*1〜*{MAX_REPEAT}）")
+            repeat = int(digits)
+        if len(beats) + repeat > MAX_BEATS:
+            raise ParseError(f"1 小節の拍が多すぎます（{MAX_BEATS} まで）")
         duration = beat_duration
         for _ in range(repeat):
             beats.append(Beat(notes, rest, beat_duration, effects, bare, effects_span, effect_items, unread))
@@ -566,6 +577,7 @@ def check_bars(
     prev_unknown = False
     prev_number: int | None = None
     open_repeat = False
+    total = 0  # 読んだ拍の数（短い入力から大量の拍を作らせない）
 
     for n in sorted(bars):
         if (prev_number is None and n > 1) or (prev_number is not None and n != prev_number + 1):
@@ -573,10 +585,14 @@ def check_bars(
         prev_number = n
         try:
             bar, duration = parse_bar(bars[n], duration)
-        except ParseError as e:
+        except ValueError as e:  # ParseError と、数字として読めない値（桁が多すぎる数字など）
             issues.append(Issue(n, "error", f"読めません: {e}"))
             prev_beat, prev_unknown = None, True
             continue
+        total += len(bar.beats)
+        if total > MAX_TOTAL_BEATS:
+            issues.append(Issue(n, "error", f"拍の合計が多すぎます（{MAX_TOTAL_BEATS} まで）。ここから後ろは調べていません"))
+            break
         parsed[n] = bar
         issues.extend(Issue(n, "warning", w) for w in bar.warnings)
 

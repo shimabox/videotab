@@ -22,8 +22,13 @@ from PIL import Image, ImageDraw
 from videotab.workdir import Frame
 
 
+IMAGE_FORMATS = ("PNG", "JPEG")  # フレームの画像として開く形式（切り出しは PNG、取り込みは PNG か JPEG）
+
+
 def load_rgb(path) -> np.ndarray:
-    return np.asarray(Image.open(path).convert("RGB")).astype(np.float32)
+    # Pillow は名前ではなく中身で形式を決める。形式を限らないと、.png の名前で置かれた別の形式
+    # （EPS は外部のプログラムで描画する）まで開くので、フレームの形式だけにする
+    return np.asarray(Image.open(path, formats=IMAGE_FORMATS).convert("RGB")).astype(np.float32)
 
 
 def to_gray(rgb: np.ndarray) -> np.ndarray:

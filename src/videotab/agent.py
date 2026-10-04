@@ -4,7 +4,10 @@ API キーは使わず、手元の claude / codex コマンド（利用者のロ
 
 Claude Code は --restricted と --permission-mode dontAsk で起動する。利用者の設定
 （auto モードなど）を読まず、ファイル操作は作業フォルダの中だけ、書けるのは指定した
-ファイルだけ、実行できるのは videotab check / zoom だけになり、それ以外は聞かずに拒否される。
+ファイルだけになる。実行を許すのは videotab check / zoom だけで、ほかは聞かずに拒否される。
+ただし Claude Code は、作業フォルダの中を読むだけのコマンド（ls・cat など）を自分の判断で通す。
+git の読むだけのコマンドも通り、作業フォルダを含むリポジトリのコミット済みの内容まで読めるので、
+git は明示して禁じる。確かめたのは Claude Code 2.1.289。
 読み取りの決まりはプロンプトに入れて渡す（作業フォルダの外の AGENTS.md は読めないため）。
 
 Codex は利用者の設定（~/.codex/config.toml）を読まずに workspace-write の sandbox で起動し、
@@ -12,6 +15,13 @@ Codex は利用者の設定（~/.codex/config.toml）を読まずに workspace-w
 /tmp と $TMPDIR も外す（$TMPDIR には videotab 本体やほかのプログラムの一時ファイルがある）。
 書けるのは作業フォルダの中だけだが、読むことと、sandbox の中でのコマンドの実行は制限しきれない。
 一時フォルダを外した効果を確かめたのは macOS・codex-cli 0.158.0 で、Linux では確かめていない。
+sandbox のネットワークの制限が効くのはシェルのコマンドだけなので、読み取りに要らない機能
+（ChatGPT のコネクタ・プラグイン・web 検索など）は、起動の引数で切る（CODEX_FEATURES_OFF）。
+残るのは、シェルと、画像を見ること、サブエージェント（権限は親と同じ）。
+シェルのコマンドには、名前に KEY・SECRET・TOKEN を含む環境変数を渡さない。
+作業フォルダと、それを含むリポジトリは untrusted として渡し、そこの AGENTS.md を自動で読ませない
+（読み手が作業フォルダに置いた AGENTS.md が、次の起動の指示にならないように）。
+どちらのエージェントの子プロセスの git にも、暗黙の裸リポジトリを使わせない（GIT_ENV）。
 
 どちらも環境変数 VIDEOTAB_CONFINE に作業フォルダを入れて起動する。読み手が実行する
 videotab check / zoom は、これより外のパスを受け付けない（Claude Code の許可はサブコマンド
@@ -30,6 +40,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -40,12 +51,30 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from videotab.agent_settings import AgentSettings, actual_text, claude_args, codex_args, removed_env, valid_model, validate
-from videotab.cancel import Cancel, Cancelled
+from videotab.cancel import Cancel, Cancelled, stop
 
 ENGINES = ("claude", "codex")
 DEFAULT_ENGINE = "claude"
 CONFINE_ENV = "VIDEOTAB_CONFINE"
 TIMEOUT = 60 * 60  # 1 回の起動の上限（秒）
+# Codex の読み手で切る機能（-c features.<名前>=false。その版の Codex に無い名前は無視される）。
+# 読み取りに要るのは、シェル（videotab check / zoom）と画像を見ることだけ
+CODEX_FEATURES_OFF = (
+    "apps",  # ChatGPT のコネクタ。sandbox のネットワークの制限が効かない
+    "plugins",
+    "remote_plugin",
+    "tool_suggest",  # プラグインの導入の提案
+    "multi_agent",
+    "image_generation",
+    "browser_use",
+    "computer_use",
+    "hooks",
+    "skill_mcp_dependency_install",
+    "shell_snapshot",  # 起動時に、利用者のログインシェルを作業フォルダで実行して環境を写し取る
+)
+# 子プロセスの git に渡す設定。作業フォルダの直下に裸リポジトリの形（HEAD・config・objects・refs）を
+# 置かれても、そこをリポジトリとして使わない（その config に書いたコマンドを git が実行するため）
+GIT_ENV = ("safe.bareRepository", "explicit")
 
 
 def available_engines() -> dict[str, bool]:
@@ -83,13 +112,20 @@ def _claude_command(
     # --restricted でも --settings は適用される。渡すのは model と modelSettings だけと、
     # 選んだ値の --model / --effort。--tools・--allowedTools は複数の値を取るので、その前に置く
     extra = claude_args(settings) if settings is not None else []
+    # git の読むだけのコマンド（git show など）は、許可が無くても Claude Code が通すので、明示して禁じる
     return [
         "claude", "-p", prompt,
         "--restricted", "--strict-mcp-config", "--permission-mode", "dontAsk", *extra,
         "--tools", "Read", "Write", "Edit", "Glob", "Grep", "Bash",
         "--allowedTools", *allowed,
+        "--disallowedTools", "Bash(git:*)",
         "--output-format", "stream-json", "--verbose",
     ]  # fmt: skip
+
+
+def _project_root(workdir: Path) -> Path:
+    """Codex がプロジェクトとみなすフォルダ（workdir から上へたどって、最初に .git がある所。無ければ workdir）。"""
+    return next((p for p in [workdir, *workdir.parents] if (p / ".git").exists()), workdir)
 
 
 def _codex_command(
@@ -98,8 +134,19 @@ def _codex_command(
     # 利用者の設定を読まず、書けるのは作業フォルダの中だけ（workspace-write の範囲）に固定する。
     # workspace-write は既定で /tmp と $TMPDIR にも書けるので、exclude_* で外す（writable_roots=[] では
     # 外れない）。-o の最後の返答は sandbox の外の codex 本体が書くので、$TMPDIR に置いたままでよい。
+    # network_access=false が効くのはシェルのコマンドだけなので、ほかの機能と web 検索は別に切る。
+    # シェルのコマンドには、名前に KEY・SECRET・TOKEN を含む環境変数を渡さない（Codex の既定は渡す）。
     # モデルと推論の強さだけは、videotab が読んだ値を引数で渡す
     extra = codex_args(settings) if settings is not None else []
+    features_off = [arg for name in CODEX_FEATURES_OFF for arg in ("-c", f"features.{name}=false")]
+    # 作業フォルダと、それを含むリポジトリを untrusted として渡す（そこの AGENTS.md を自動で読まない）
+    wd = workdir.resolve()
+    # キーは TOML の文字列。JSON の書き方のうち、ASCII でない文字の \uXXXX（絵文字などは代理対になり、
+    # TOML では不正）だけを避ければ、そのまま TOML として読める
+    untrusted = ",".join(
+        f'{json.dumps(str(p), ensure_ascii=False)}={{trust_level="untrusted"}}'
+        for p in dict.fromkeys([_project_root(wd), wd])
+    )
     return [
         "codex", "exec", "--ignore-user-config", "--ignore-rules",
         "--sandbox", "workspace-write",
@@ -107,10 +154,34 @@ def _codex_command(
         "-c", "sandbox_workspace_write.network_access=false",
         "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
         "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+        *features_off,
+        "-c", 'web_search="disabled"',
+        "-c", "shell_environment_policy.ignore_default_excludes=false",
+        "-c", f"projects={{{untrusted}}}",
         *extra,
         "--skip-git-repo-check", "--color", "never",
         "-C", str(workdir.resolve()), "-o", str(last_message.resolve()), prompt,
     ]  # fmt: skip
+
+
+def _add_git_config(env: dict[str, str], key: str, value: str) -> None:
+    """子プロセスの git に設定を 1 つ足す（GIT_CONFIG_COUNT の仕組み。すでにある分の後ろに足す）。"""
+    count = env.get("GIT_CONFIG_COUNT", "")
+    n = int(count) if count.isdigit() else 0
+    env[f"GIT_CONFIG_KEY_{n}"] = key
+    env[f"GIT_CONFIG_VALUE_{n}"] = value
+    env["GIT_CONFIG_COUNT"] = str(n + 1)
+
+
+def _launch_dir(engine: str, workdir: Path) -> Path:
+    """エージェントのコマンドを起動するときの cwd。
+
+    Claude Code は --restricted でファイル操作を cwd の中に限るので、作業フォルダで起動する。
+    Codex には作業フォルダを -C で渡すので、読み手が書けない作業フォルダの親で起動する。
+    作業フォルダを cwd にすると、読み手がそこに置いたファイルで、次に起動する codex コマンドが
+    変わりうる（実行する版を cwd の設定ファイルで決める道具を通して入れている場合など）。
+    """
+    return workdir if engine == "claude" else workdir.resolve().parent
 
 
 def _describe_claude_event(line: str) -> tuple[str | None, str | None]:
@@ -177,17 +248,20 @@ def run_agent(
     start = time.monotonic()
     final = ""
     env = {**os.environ, CONFINE_ENV: str(workdir.resolve())}
+    _add_git_config(env, *GIT_ENV)
     for name in removed_env(settings) if settings is not None else ():
         env.pop(name, None)
     proc = subprocess.Popen(
-        cmd, cwd=workdir, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-        text=True,
+        cmd, cwd=_launch_dir(engine, workdir), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL, text=True,
     )  # fmt: skip
     timed_out = threading.Event()
 
     def on_timeout() -> None:
+        # 止める合図（SIGTERM）を子孫にも送り、終わらなければ強制的に終わらせる。すぐ強制的に終わらせると、
+        # エージェントが自分の起動したコマンドを片付けられず、子孫が出力を握ったまま残る
         timed_out.set()
-        proc.kill()
+        stop(proc, signal.SIGTERM)
 
     timer = threading.Timer(TIMEOUT, on_timeout)
     timer.start()

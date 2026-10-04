@@ -35,15 +35,18 @@ def files(tmp_path, monkeypatch):
     wd = root / JOB
     wd.mkdir(parents=True)
     out = make_outside(tmp_path)
-    (out / "x.html").write_text("outside")
-    (out / "d" / "y.html").write_text("outside y")
-    (out / "h.html").write_text("outside h")
-    (wd / f"{JOB}.html").write_text("<p>tab</p>")
-    (wd / "sym.html").symlink_to(out / "x.html")
+    (out / "x.md").write_text("outside")
+    (out / "d" / "y.md").write_text("outside y")
+    (out / "h.md").write_text("outside h")
+    (wd / "notes.md").write_text("# notes")
+    (wd / "sym.md").symlink_to(out / "x.md")
     (wd / "sub").symlink_to(out / "d")
-    os.link(out / "h.html", wd / "hard.html")
-    (wd / "inner").symlink_to(f"{JOB}.html")  # 中を指すリンクは返す
-    os.mkfifo(wd / "fifo.html")
+    os.link(out / "h.md", wd / "hard.md")
+    (wd / "inner.md").symlink_to("notes.md")  # 中を指すリンクは返す
+    os.mkfifo(wd / "fifo.md")
+    # タブ譜のページのもとになる <ID>.alphatex が、外を指すリンク
+    (out / "x.alphatex").write_text('\\title "outside"\n')
+    (wd / f"{JOB}.alphatex").symlink_to(out / "x.alphatex")
     app = server.App(root)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(app))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -61,19 +64,43 @@ def get(url):
 
 def test_files_serves_plain_files_inside_only(files):
     app, base = files
-    assert get(f"{base}/files/{JOB}/{JOB}.html") == (200, b"<p>tab</p>")
-    for rel in ("sym.html", "sub/y.html", "hard.html", "fifo.html"):
+    assert get(f"{base}/files/{JOB}/notes.md") == (200, b"# notes")
+    assert get(f"{base}/files/{JOB}/inner.md") == (200, b"# notes")
+    for rel in ("sym.md", "sub/y.md", "hard.md", "fifo.md", f"{JOB}.alphatex"):
         assert get(f"{base}/files/{JOB}/{rel}")[0] == 404, rel
         assert app.read_file(JOB, rel) is None
-    assert app.read_file(JOB, f"{JOB}.html")[1] == b"<p>tab</p>"
+    assert app.read_file(JOB, "notes.md")[1] == b"# notes"
+    # 外を指す <ID>.alphatex からは、タブ譜のページを組み立てない
+    assert get(f"{base}/files/{JOB}/{JOB}.html")[0] == 404 and app.page(JOB) is None
+
+
+def test_files_does_not_follow_a_folder_swapped_after_the_check(files, tmp_path, monkeypatch):
+    # パスを確かめたあとに、途中のフォルダを外へのリンクに差し替えられても、外のファイルを返さない
+    app, base = files
+    wd = app.root / JOB
+    (wd / "pages").mkdir()
+    (wd / "pages" / "y.md").write_text("inside y")
+    assert app.read_file(JOB, "pages/y.md")[1] == b"inside y"
+    checked = server.App.file_path
+
+    def swap_after_check(self, job_id, rel):
+        found = checked(self, job_id, rel)
+        if rel == "pages/y.md" and not (wd / "pages").is_symlink():
+            (wd / "pages").rename(wd / "pages.real")
+            (wd / "pages").symlink_to(tmp_path / "outside" / "d")  # y.md（中身は outside y）がある外のフォルダ
+        return found
+
+    monkeypatch.setattr(server.App, "file_path", swap_after_check)
+    assert app.read_file(JOB, "pages/y.md") is None
+    assert get(f"{base}/files/{JOB}/pages/y.md")[0] == 404
 
 
 def test_files_are_sandboxed_and_refusals_are_not_sniffed(files):
     _, base = files
-    with urllib.request.urlopen(f"{base}/files/{JOB}/{JOB}.html") as r:
+    with urllib.request.urlopen(f"{base}/files/{JOB}/notes.md") as r:
         assert r.headers["Content-Security-Policy"] == server.FILES_CSP
         assert r.headers["X-Content-Type-Options"] == "nosniff"
-    for rel in ("sym.html", "hard.html"):
+    for rel in ("sym.md", "hard.md"):
         with pytest.raises(urllib.error.HTTPError) as e:
             urllib.request.urlopen(f"{base}/files/{JOB}/{rel}")
         assert e.value.code == 404 and e.value.headers["X-Content-Type-Options"] == "nosniff"

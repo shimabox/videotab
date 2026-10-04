@@ -234,9 +234,11 @@ def test_agent_options_show_only_checked_values(tmp_path, monkeypatch):
 
 class FakePopen:
     seen = []
+    cwds = []
 
     def __init__(self, cmd, *, cwd, env, stdout, stderr, stdin, text):
         FakePopen.seen.append((cmd, env))
+        FakePopen.cwds.append(cwd)
         self.stdout = iter([
             json.dumps({"type": "system", "subtype": "init", "model": "claude-sonnet-5"}) + "\n",
             json.dumps({"type": "result", "subtype": "success", "result": "おわり"}) + "\n",
@@ -253,6 +255,7 @@ class FakePopen:
 @pytest.fixture
 def fake_popen(monkeypatch):
     FakePopen.seen = []
+    FakePopen.cwds = []
     monkeypatch.setattr(agent.subprocess, "Popen", FakePopen)
     monkeypatch.setattr(agent.shutil, "which", lambda name: f"/usr/bin/{name}")
     return FakePopen.seen
@@ -275,7 +278,11 @@ def test_usual_settings_keep_env_and_command(tmp_path, monkeypatch, fake_popen, 
     monkeypatch.setenv("ANTHROPIC_MODEL", "claude-sonnet-5")
     launch(tmp_path, engine, settings)
     cmd, env = fake_popen[0]
-    assert env == {**os.environ, agent.CONFINE_ENV: str(tmp_path.resolve())}
+    # 環境変数は、閉じ込めの作業フォルダと、子プロセスの git の設定を足すだけ（利用者が同じ仕組みで渡している
+    # git の設定があれば、その後ろに足す）
+    expected = {**os.environ, agent.CONFINE_ENV: str(tmp_path.resolve())}
+    agent._add_git_config(expected, *agent.GIT_ENV)
+    assert env == expected and env[f"GIT_CONFIG_KEY_{int(env['GIT_CONFIG_COUNT']) - 1}"] == "safe.bareRepository"
     if engine == "claude":
         assert cmd == agent._claude_command("読む", [tmp_path / "part_A.json"], tmp_path, settings=settings)
         assert "--model" not in cmd and "--effort" not in cmd
@@ -323,6 +330,18 @@ def test_codex_command_with_choice(tmp_path, fake_popen):
     i = cmd.index("-m")
     assert cmd[i : i + 4] == ["-m", "gpt-7", "-c", 'model_reasoning_effort="high"']
     assert "--ignore-user-config" in cmd
+
+
+def test_codex_starts_in_the_parent_folder_the_reader_cannot_write(tmp_path, fake_popen):
+    # 作業フォルダは読み手が書けるので、Codex のコマンドはその親で起動する（作業フォルダは -C で渡す）。
+    # Claude Code は、ファイル操作の範囲が cwd で決まるので、作業フォルダで起動する
+    wd = tmp_path / "work" / "song"
+    wd.mkdir(parents=True)
+    launch(wd, "codex", None)
+    launch(wd, "claude", None)
+    assert FakePopen.cwds == [wd.resolve().parent, wd]
+    cmd, env = fake_popen[0]
+    assert cmd[cmd.index("-C") + 1] == str(wd.resolve()) and env[agent.CONFINE_ENV] == str(wd.resolve())
 
 
 def test_run_agent_rejects_bad_choice_before_start(tmp_path, monkeypatch):

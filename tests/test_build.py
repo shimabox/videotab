@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from videotab import build, verify
 from videotab.render import render_html, tuning_label
 from videotab.workdir import frame_name, parse_frame_name
@@ -81,10 +83,67 @@ def test_build_stops_on_missing_bars_check_errors_and_missing_tempo(tmp_path, ca
     assert json.loads((wd2 / "score.json").read_text(encoding="utf-8"))["tempo"] is None
 
 
+def test_bar_number_is_limited(tmp_path, capsys):
+    # 大きな小節番号が 1 つあると、抜けている小節の一覧がその数だけ膨らむ
+    wd = setup_work(tmp_path)
+    write(wd / "parts" / "part_A.json", {"1": "r.1", str(build.MAX_BAR): "r.1"})
+    assert max(build.load_part(wd / "parts" / "part_A.json")) == build.MAX_BAR
+    write(wd / "parts" / "part_A.json", {"1": "r.1", "99999999": "r.1"})
+    for call in (lambda: build.load_part(wd / "parts" / "part_A.json"), lambda: build.run_build(wd),
+                 lambda: build.run_check(wd / "parts" / "part_A.json")):  # fmt: skip
+        with pytest.raises(SystemExit, match="小節番号 99999999 が範囲の外です（0〜9999）"):
+            call()
+    assert not (wd / "song.html").exists()
+    write(wd / "parts" / "part_A.json", {"0": "r.1", "-1": "r.1"})  # 負の番号は、数に上限が無くなるので断る
+    with pytest.raises(SystemExit, match="小節番号 -1 が範囲の外です"):
+        build.load_part(wd / "parts" / "part_A.json")
+    write(wd / "parts" / "part_A.json", {"0": "r.1", "1": "r.1"})
+    assert sorted(build.load_part(wd / "parts" / "part_A.json")) == [0, 1]
+
+
+def test_huge_json_is_not_loaded(tmp_path, monkeypatch):
+    from videotab import workdir
+
+    wd = setup_work(tmp_path)
+    write(wd / "parts" / "part_A.json", {"1": "r.1"})
+    monkeypatch.setattr(workdir, "MAX_JSON_BYTES", 5)
+    with pytest.raises(ValueError, match="part_A.json が大きすぎます"):
+        workdir.read_json(wd / "parts" / "part_A.json")
+    with pytest.raises(ValueError, match="meta.json が大きすぎます"):
+        workdir.load_meta(wd)
+
+
 def test_title_quotes_do_not_break_alphatex(tmp_path):
     tex = build.alphatex_document({1: "r.1"}, {"title": 'A "B" C', "tempo": 100, "time_signature": [4, 4],
                                                 "tuning": "e4 b3 g3 d3 a2 e2"})
     assert tex.splitlines()[0] == '\\title "A ＂B＂ C"'
+
+
+def test_document_head_reads_back_what_alphatex_document_wrote():
+    score = {"title": 'A "B" \\ C', "subtitle": "副題", "tab_by": "作成者", "tempo": 137.5, "capo": 2,
+             "time_signature": [6, 8], "tuning": "d4 a3 f3 c3 g2 d2"}
+    bars = {1: "\\tempo 90 r.2 {d}", 2: '(0.6{ch "A|m"}).2 {d}', 3: "\\capo 5"}
+    head, body = build.document_head(build.alphatex_document(bars, score))
+    assert head == {"title": 'A "B" \\ C', "tempo": "137.5", "tuning": "d4 a3 f3 c3 g2 d2", "capo": "2"}
+    assert body == '\\tempo 90 r.2 {d} |\n(0.6{ch "A|m"}).2 {d} |\n\\capo 5\n'
+    assert build.count_bars(body) == 3  # "..." の中の | は区切りに数えない
+    plain = {"title": "曲", "tempo": 120, "time_signature": [4, 4], "tuning": "e4 b3 g3 d3 a2 e2"}
+    assert build.document_head(build.alphatex_document({1: "r.1"}, plain))[0] == {
+        "title": "曲", "tempo": "120", "tuning": "e4 b3 g3 d3 a2 e2"
+    }
+
+
+def test_page_html_falls_back_when_the_document_has_no_usable_head():
+    # 見出しの形でない文書（読み手が書き換えた場合など）は、全体を小節の並びとして扱う
+    assert build.document_head("r.1 |\nr.1\n") == ({}, "r.1 |\nr.1\n")
+    assert build.count_bars("") == 0 and build.count_bars("\n") == 0
+    html = build.page_html("r.1 |\nr.1\n", {}, name="song")
+    assert "<title>song - videotab</title>" in html and "Tempo: 0 BPM" in html
+    assert "Tuning: E A D G B E" in html and "Capo: 0" in html and "小節数: 2" in html
+    # 数として読めない値は 0 にする
+    html = build.page_html('\\title ""\n\\tempo fast\n\\capo 1e999\n\\ts 4 4\nr.1\n', {"title": ["x"]}, name="song")
+    assert "<title>song - videotab</title>" in html and "Tempo: 0 BPM" in html and "Capo: 0" in html
+    assert "Capo: 2" in build.page_html("\\capo 2.0\n\\ts 4 4\nr.1\n", {}, name="song")  # score.json の capo が 2.0 のとき
 
 
 LINK = '<a href="https://example.com/v" target="_blank" rel="noopener noreferrer">Song</a>'
@@ -116,6 +175,16 @@ def test_build_credits_creator_without_link(tmp_path):
     assert '\\tab "Creator"' in (wd / "song.alphatex").read_text(encoding="utf-8")
     html = (wd / "song.html").read_text(encoding="utf-8")
     assert "元動画: Song（作成: Creator）<br>" in html and "javascript:" not in html
+
+
+def test_source_link_is_checked_like_the_upload(tmp_path):
+    # meta.json は読み手も書けるので、使うたびに取り込み時と同じ検査に通す
+    ok = "https://example.com/v?x=1"
+    assert build.source_link({"source_url": f"  {ok} "}) == ok
+    for bad in ("javascript:alert(1)", "http://example.com/v", "https://example.com/a b", "https://example.com/\x07",
+                "https://example.com/" + "a" * 2000, ["https://example.com/v"], None, ""):  # fmt: skip
+        assert build.source_link({"source_url": bad}) is None, bad
+    assert build.source_link({}) is None
 
 
 def test_build_without_creator_keeps_plain_credit(tmp_path):

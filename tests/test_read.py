@@ -34,13 +34,16 @@ def test_plan_message_describes_the_split():
 
 def test_claude_command_limits_tools(tmp_path):
     cmd = agent._claude_command("読む", [tmp_path / "parts" / "part_A.json"], tmp_path)
-    allowed = cmd[cmd.index("--allowedTools") + 1 : cmd.index("--output-format")]
+    allowed = cmd[cmd.index("--allowedTools") + 1 : cmd.index("--disallowedTools")]
     assert "Read" in allowed
     assert f"Write(/{(tmp_path / 'parts' / 'part_A.json').resolve()})" in allowed
     # 実行できるのは videotab check / zoom だけ（外のパスは videotab 自身が VIDEOTAB_CONFINE で拒む）
     yt = agent.videotab_bin()
     assert [a for a in allowed if a.startswith("Bash")] == [f"Bash({yt} check:*)", f"Bash({yt} zoom:*)"]
     assert not any(a in ("Bash", "Write", "Edit") for a in allowed)
+    # git の読むだけのコマンドは、許可が無くても Claude Code が通す（作業フォルダを含むリポジトリの
+    # コミット済みの内容まで読める）ので、明示して禁じる
+    assert cmd[cmd.index("--disallowedTools") + 1 : cmd.index("--output-format")] == ["Bash(git:*)"]
 
 def test_codex_ignores_user_config(tmp_path):
     cmd = agent._codex_command("読む", tmp_path, tmp_path / "last.txt")
@@ -59,6 +62,57 @@ def test_codex_cannot_write_to_temporary_folders(tmp_path):
     ):
         assert value in configs, value
     assert "--ignore-user-config" in cmd
+
+def test_codex_keeps_only_shell_and_image_viewing(tmp_path):
+    cmd = agent._codex_command("読む", tmp_path, tmp_path / "last.txt")
+    configs = [cmd[i + 1] for i, a in enumerate(cmd[:-1]) if a == "-c"]
+    # sandbox のネットワークの制限はシェルのコマンドにしか効かないので、ほかの機能と web 検索を切る
+    for name in ("apps", "plugins", "remote_plugin", "tool_suggest", "multi_agent", "image_generation",
+                 "browser_use", "computer_use", "hooks", "skill_mcp_dependency_install", "shell_snapshot"):  # fmt: skip
+        assert f"features.{name}=false" in configs, name
+    assert 'web_search="disabled"' in configs
+    # シェルのコマンドには、秘密らしい名前の環境変数を渡さない
+    assert "shell_environment_policy.ignore_default_excludes=false" in configs
+    assert not any(c.startswith(("features.shell_tool", "features.unified_exec")) for c in configs)  # シェルは残す
+    assert "--enable" not in cmd and "--add-dir" not in cmd
+
+def test_codex_does_not_trust_the_work_folder_nor_its_repository(tmp_path):
+    # 作業フォルダと、それを含むリポジトリを untrusted として渡す（そこの AGENTS.md を自動で読ませない。
+    # 読み手が作業フォルダに置いた AGENTS.md が、次の起動の指示にならないように）
+    repo = tmp_path / "re po"
+    wd = repo / "work" / "song"
+    wd.mkdir(parents=True)
+    (repo / ".git").mkdir()
+    assert agent._project_root(wd.resolve()) == repo.resolve()
+    cmd = agent._codex_command("読む", wd, tmp_path / "last.txt")
+    configs = [cmd[i + 1] for i, a in enumerate(cmd[:-1]) if a == "-c"]
+    untrusted = '={trust_level="untrusted"}'
+    assert f"projects={{{json.dumps(str(repo.resolve()))}{untrusted},{json.dumps(str(wd.resolve()))}{untrusted}}}" in configs
+    # リポジトリの中でなければ、作業フォルダだけ
+    alone = tmp_path / "alone"
+    alone.mkdir()
+    assert agent._project_root(alone.resolve()) == alone.resolve()
+    cmd = agent._codex_command("読む", alone, tmp_path / "last.txt")
+    assert f"projects={{{json.dumps(str(alone.resolve()))}{untrusted}}}" in cmd
+    # 絵文字や引用符を含むパスでも、TOML として読める（JSON の \uXXXX の代理対は TOML では不正）
+    import tomllib
+
+    odd = tmp_path / '🎸 "tab" フォルダ'
+    odd.mkdir()
+    cmd = agent._codex_command("読む", odd, tmp_path / "last.txt")
+    value = next(c for c in (cmd[i + 1] for i, a in enumerate(cmd[:-1]) if a == "-c") if c.startswith("projects="))
+    assert tomllib.loads(value) == {"projects": {str(odd.resolve()): {"trust_level": "untrusted"}}}
+
+
+def test_child_git_does_not_use_an_implicit_bare_repository():
+    # 作業フォルダの直下に裸リポジトリの形を置かれても、エージェントの子プロセスの git がそこを使わない
+    env = {}
+    agent._add_git_config(env, *agent.GIT_ENV)
+    assert env == {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.bareRepository", "GIT_CONFIG_VALUE_0": "explicit"}
+    env = {"GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "a.b", "GIT_CONFIG_VALUE_0": "1", "GIT_CONFIG_KEY_1": "c.d", "GIT_CONFIG_VALUE_1": "2"}
+    agent._add_git_config(env, *agent.GIT_ENV)  # 利用者が同じ仕組みで渡している設定の後ろに足す
+    assert env["GIT_CONFIG_COUNT"] == "3" and env["GIT_CONFIG_KEY_2"] == "safe.bareRepository" and env["GIT_CONFIG_KEY_0"] == "a.b"
+
 
 def test_videotab_check_refuses_paths_outside_confined_folder(tmp_path, monkeypatch):
     from videotab import cli
@@ -196,6 +250,7 @@ def base_claude_command(tmp_path):
         "--tools", "Read", "Write", "Edit", "Glob", "Grep", "Bash",
         "--allowedTools", "Read", "Glob", "Grep", f"Bash({yt} check:*)", f"Bash({yt} zoom:*)",
         f"Write({rule})", f"Edit({rule})",
+        "--disallowedTools", "Bash(git:*)",
         "--output-format", "stream-json", "--verbose",
     ]  # fmt: skip
 
@@ -208,6 +263,10 @@ def base_codex_command(tmp_path):
         "-c", "sandbox_workspace_write.network_access=false",
         "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
         "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+        *[arg for name in agent.CODEX_FEATURES_OFF for arg in ("-c", f"features.{name}=false")],
+        "-c", 'web_search="disabled"',
+        "-c", "shell_environment_policy.ignore_default_excludes=false",
+        "-c", f'projects={{{json.dumps(str(tmp_path.resolve()))}={{trust_level="untrusted"}}}}',
         "--skip-git-repo-check", "--color", "never",
         "-C", str(tmp_path.resolve()), "-o", str((tmp_path / "last.txt").resolve()), "読む",
     ]  # fmt: skip
