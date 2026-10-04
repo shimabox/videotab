@@ -247,7 +247,9 @@
   pre.log {
     background: var(--code-bg); border-radius: 8px; padding: 10px 12px; margin: 8px 0 0;
     max-height: 340px; overflow: auto; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap;
+    overflow-anchor: none;  /* 位置は updateLog が決める（ブラウザの自動の補正と重ねない） */
   }
+  pre.log > div { min-height: 1.5em; }  /* 空の行もつぶさない */
   /* 読み手の報告。担当名はクラスで出す（報告の太字 strong と取り違えない）。
      改行をそのまま見せるのは段落とコードだけ（箇条書き・見出しは要素で形を作る） */
   .notes .note { border-left: 3px solid var(--accent); padding: 2px 10px; margin: 10px 0; font-size: 0.86rem; }
@@ -1004,16 +1006,52 @@
     return (c.model ? "・モデル " + c.model : "") + (c.effort ? "・推論の強さ " + c.effort : "");
   }
 
+  // old の k 行目から後ろが lines の頭と同じになる、いちばん小さい k（頭から外れた行の数）。
+  // ログは末尾の決まった行数だけが届くので、長くなると頭の行が外れる。続きでなければ -1
+  function logShift(old, lines) {
+    for (var k = 0; k <= old.length; k++) {
+      var n = old.length - k;
+      if (n > lines.length) continue;
+      var same = true;
+      for (var i = 0; i < n; i++) {
+        if (old[k + i] !== lines[i]) { same = false; break; }
+      }
+      if (same) return n === 0 && old.length && lines.length ? -1 : k;
+    }
+    return -1;
+  }
+
+  // ログの欄の中身を lines にする。欄は作り直さず、増えた行を足し、頭から外れた行を除く
+  // （作り直すとスクロール位置が先頭に戻り、実行中は更新のたびに読んでいる所を見失う）。
+  // いちばん下を見ているときだけ新しい行を追い、途中を読んでいるときは同じ行が同じ位置に残るようにする
+  function updateLog(pre, lines) {
+    var old = pre.logLines || [];
+    var stick = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 8;
+    var drop = logShift(old, lines);
+    var keepTop = pre.scrollTop;
+    if (drop < 0) {
+      pre.textContent = "";
+      drop = old.length;
+    } else {
+      if (drop > 0 && !stick) {
+        keepTop -= pre.children[drop] ? pre.children[drop].offsetTop - pre.children[0].offsetTop : pre.scrollHeight;
+      }
+      for (var i = 0; i < drop; i++) pre.removeChild(pre.firstChild);
+    }
+    for (var j = old.length - drop; j < lines.length; j++) pre.appendChild(el("div", { text: lines[j] }));
+    pre.logLines = lines.slice();
+    pre.scrollTop = stick ? pre.scrollHeight : Math.max(keepTop, 0);
+  }
+
   function renderDetail(d) {
     var fresh = !current || current.id !== d.id;  // 選び直した・別の曲になった（前の曲の欄の開閉やログの位置を引き継がない）
     var area = areas(fresh);
     var top = area.top, bottom = area.bottom;
-    var logWasOpen = bottom.querySelector("details.log-box") ? bottom.querySelector("details.log-box").open : d.status === "running";
+    var logBox = bottom.querySelector("details.log-box");
     var notesWasOpen = bottom.querySelector("details.notes") ? bottom.querySelector("details.notes").open : false;
-    var logPre = bottom.querySelector("pre.log");
-    var stick = !logPre || logPre.scrollTop + logPre.clientHeight >= logPre.scrollHeight - 8;
     top.textContent = "";
-    bottom.textContent = "";
+    // ログの欄は残す（同じ曲の間は作り直さない）
+    Array.prototype.slice.call(bottom.children).forEach(function (c) { if (c !== logBox) bottom.removeChild(c); });
     if (retryChoice.id !== d.id) retryChoice = { id: d.id };
 
     // 実行中・順番待ちの曲は消せないので、ボタンを出さない
@@ -1076,11 +1114,17 @@
       var notes = el("details", { class: "notes" }, [el("summary", { text: "読み手の報告（自信のない所・曲の構成）" })]);
       notes.open = notesWasOpen;
       notesKeys.forEach(function (k) { notes.appendChild(noteBox(d, k)); });
-      bottom.appendChild(notes);
+      bottom.insertBefore(notes, logBox);  // ログの欄の上（まだ無ければ末尾）
     }
-    var log = el("details", { class: "log-box" }, [el("summary", { text: "ログ" }), el("pre", { class: "log", text: d.log.join("\n") })]);
-    log.open = logWasOpen;
-    bottom.appendChild(log);
+    if (!logBox) {
+      var logPre = el("pre", { class: "log" });
+      logBox = el("details", { class: "log-box" }, [el("summary", { text: "ログ" }), logPre]);
+      logBox.open = d.status === "running";
+      // 開いたときは、いちばん新しい行（末尾）を見せる
+      logBox.addEventListener("toggle", function () { if (logBox.open) logPre.scrollTop = logPre.scrollHeight; });
+      bottom.appendChild(logBox);
+    }
+    updateLog(logBox.querySelector("pre.log"), d.log);
 
     // タブ譜は、別の曲になったか出力が作り直されたときだけ入れ替える（再生やスクロールを保つ）
     var resultKey = d.html ? d.id + "/" + d.html + "/" + (d.updated || "") : null;
@@ -1109,8 +1153,6 @@
         shownResult = null;
       }
     }
-    var pre = bottom.querySelector("pre.log");
-    if (pre && stick) pre.scrollTop = pre.scrollHeight;
     current = d;
     endSwitching();
   }
