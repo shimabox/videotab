@@ -1,8 +1,10 @@
+import json
+
 import numpy as np
 import pytest
 from synth import BAND, TAB_LINES, frame, video_noise, write_frames
 
-from videotab import pages, strip
+from videotab import cli, pages, strip
 from videotab.workdir import list_frames
 
 
@@ -127,3 +129,394 @@ def test_auto_threshold_sits_in_gap():
     flips = np.array([0.08, 0.09, 0.1])
     thr = pages.auto_threshold(np.concatenate([noise, flips]))
     assert 0.012 <= thr < 0.08
+
+
+# --- ページごとに段が上下に動く動画
+
+
+def shifted_video(dys, per=5, staff_moves=False, cursor=False, **kw):
+    """ページごとに dy だけ段がずれる画面の列と、フレームごとの正解の dy（タブのない画面は None）。
+
+    dys の要素が None なら、そのページはタブのない映像だけの画面にする。staff_moves なら五線も
+    一緒に動く。cursor なら演奏位置の枠がページの中で右へ進む。
+    """
+    seq, truth = [], []
+    for page, dy in enumerate(dys):
+        for k in range(per):
+            n = len(seq)
+            if dy is None:
+                seq.append(video_noise(np.random.default_rng(100 + n)).astype(np.uint8))
+            else:
+                extra = {"cursor_x": 40 + 150 * k} if cursor else {}
+                seq.append(frame(page, dy=dy, staff_dy=dy if staff_moves else 0, rng_seed=n, **extra, **kw))
+            truth.append(dy)
+    return seq, truth
+
+
+def shift_at(shifts, index):
+    """フレーム番号 index の dy（shifts がなければ 0）。"""
+    return next((d for a, b, d in shifts if a <= index <= b), 0.0)
+
+
+def assert_positions(r, truth, lines=(TAB_LINES,)):
+    """基準 + dy が、タブの見えるフレームごとの正解の線と ±1px で合う。区間は全フレームを隙間なく覆う。"""
+    shifts = getattr(r, "shifts", [])
+    assert len(r.staves) == len(lines)
+    for i, dy in enumerate(truth, start=1):
+        if dy is None:
+            continue
+        got = shift_at(shifts, i)
+        for st, want in zip(r.staves, lines):
+            assert np.allclose(np.array(st.lines) + got, np.array(want) + dy, atol=1.0), (i, dy, got)
+    assert shifts[0][0] == 1 and shifts[-1][1] == len(truth)
+    assert all(b + 1 == a for (_, b, _), (a, _, _) in zip(shifts, shifts[1:]))
+    # 基準は観測された位置のひとつ
+    seen = {dy for dy in truth if dy is not None}
+    assert any(np.allclose(r.staves[0].lines, np.array(lines[0]) + dy, atol=1.0) for dy in seen)
+
+
+def assert_band_holds_lines(r, truth, lines=(TAB_LINES,)):
+    dys = [dy for dy in truth if dy is not None]
+    y0, y1 = r.band
+    assert y0 <= min(lines[0]) + min(dys) and y1 > max(lines[-1]) + max(dys)
+
+
+def stacked_staves(seq, polarity=-1):
+    """変更前の detect と同じく、全フレームの線の強さを重ねて探した組。"""
+    grays = [strip.to_gray(a.astype(np.float32)) for a in seq]
+    strengths = np.stack([strip.line_strength(g, polarity) for g in grays])
+    return strip.find_staves(strip.find_peaks(np.quantile(strengths, 0.67, axis=0)), seq[0].shape[0])
+
+
+@pytest.mark.parametrize("dark", [False, True])
+def test_strip_follows_staff_moving_page_by_page(tmp_path, dark):
+    # どの位置も全体の 1/3 未満。ちょうど 1 間隔（7px）のずれと端数のずれを含む
+    seq, truth = shifted_video([0, 7, 3, 18, 11], dark=dark)
+    write_frames(tmp_path, seq)
+    r = strip.detect(list_frames(tmp_path))
+    assert r.polarity == (1 if dark else -1)
+    assert_positions(r, truth)
+    assert_band_holds_lines(r, truth)
+    assert len(r.shifts) == 5
+    assert r.frames_with_tab == r.frames_used
+
+
+def test_strip_moving_staff_when_stacking_makes_a_false_staff(tmp_path):
+    seq, truth = shifted_video([0, 3, 7, 10], per=6)
+    # 前提: 重ねると、間隔 7px でない偽の組ができる
+    assert not any(abs(st.spacing - 7) < 0.7 for st in stacked_staves(seq))
+    write_frames(tmp_path, seq)
+    r = strip.detect(list_frames(tmp_path))
+    assert_positions(r, truth)
+    assert np.isclose(r.staves[0].spacing, 7, atol=0.5)
+
+
+def test_strip_moving_staff_when_one_frame_shows_an_extra_staff(tmp_path):
+    seq, truth = shifted_video([0, 3, 7, 10], per=6)
+    # 1 枚だけ、同じ間隔の 6 本組がもう 1 組見つかり、そのフレームだけ 2 段になる
+    seq[2] = frame(0, second=-120, rng_seed=2)
+    write_frames(tmp_path, seq)
+    r = strip.detect(list_frames(tmp_path))
+    assert r.shifts
+    assert_positions(r, truth)
+    assert np.isclose(r.staves[0].spacing, 7, atol=0.5)
+
+
+def test_strip_moving_staff_when_stacking_makes_two_staves(tmp_path):
+    # タブだけの画面で、段が 60px 動く。重ねると 1 段の動画が 2 段に見える
+    seq, truth = shifted_video([0, -60, 0, -60], per=6, staff=False)
+    assert len(stacked_staves(seq)) == 2
+    write_frames(tmp_path, seq)
+    r = strip.detect(list_frames(tmp_path))
+    assert_positions(r, truth)
+    assert_band_holds_lines(r, truth)
+
+
+def test_strip_moving_staff_and_staff_notation_by_60px(tmp_path):
+    # 五線も一緒に 60px 動く。重ねると、線を寄せ集めた間隔の広い偽の組ができる
+    seq, truth = shifted_video([0, -60, 0, -60], per=6, staff_moves=True)
+    assert not any(abs(st.spacing - 7) < 0.7 for st in stacked_staves(seq))
+    write_frames(tmp_path, seq)
+    r = strip.detect(list_frames(tmp_path))
+    assert_positions(r, truth)
+    assert_band_holds_lines(r, truth)
+
+
+def test_strip_moving_staff_with_one_dominant_position(tmp_path):
+    # 0px の位置が半分を占める（重ねても見つかる）が、ほかのページで動く
+    seq, truth = shifted_video([0, 4, 0, 10], per=6)
+    stacked = stacked_staves(seq)
+    assert len(stacked) == 1 and np.allclose(stacked[0].lines, TAB_LINES, atol=1.0)
+    write_frames(tmp_path, seq)
+    r = strip.detect(list_frames(tmp_path))
+    assert_positions(r, truth)
+    assert [(a, b) for a, b, _ in r.shifts] == [(1, 6), (7, 12), (13, 18), (19, 24)]
+    assert np.allclose([d for _, _, d in r.shifts], [0, 4, 0, 10], atol=1.0)
+
+
+def test_strip_moving_staff_with_intro_outro_and_cursor(tmp_path):
+    seq, truth = shifted_video([None, 0, 7, 14, None], per=4, cursor=True)
+    write_frames(tmp_path, seq)
+    r = strip.detect(list_frames(tmp_path))
+    assert_positions(r, truth)
+    assert r.frames_with_tab == 12  # 演奏位置の枠があるフレームも位置が出る。前奏と終わりは出ない
+    assert r.shifts[0][0] == 1 and r.shifts[-1][1] == 20
+
+
+@pytest.mark.parametrize("staff_moves", [False, True])
+def test_strip_moving_tab_does_not_take_the_staff(tmp_path, staff_moves):
+    seq, truth = shifted_video([0, 4, 9, 15], staff_moves=staff_moves)
+    write_frames(tmp_path, seq)
+    r = strip.detect(list_frames(tmp_path))
+    assert_positions(r, truth)
+    assert np.isclose(r.staves[0].spacing, 7, atol=0.5)
+
+
+def test_strip_moving_staff_with_band_option(tmp_path):
+    seq, truth = shifted_video([0, 7, 3, 18, 11])
+    write_frames(tmp_path, seq)
+    r = strip.detect(list_frames(tmp_path), band=(240, 345))
+    assert r.band == (240, 345)
+    assert_positions(r, truth)
+
+
+@pytest.mark.parametrize("dark", [False, True])
+def test_strip_fixed_staff_has_no_shifts(tmp_path, dark):
+    write_frames(tmp_path, [frame(k // 3, dark=dark, rng_seed=k) for k in range(30)])
+    r = strip.detect(list_frames(tmp_path))
+    assert r.shifts == []
+    assert np.allclose(r.staves[0].lines, TAB_LINES, atol=1.0)
+    assert r.frames_with_tab == r.frames_used == 24
+
+
+def test_strip_two_staves_fixed_and_moving_together(tmp_path):
+    second = [y - 120 for y in TAB_LINES]
+    write_frames(tmp_path, [frame(k // 3, second=-120, rng_seed=k) for k in range(9)])
+    r = strip.detect(list_frames(tmp_path))
+    assert len(r.staves) == 2 and r.shifts == []
+    assert np.allclose(r.staves[0].lines, second, atol=1.0)
+    assert np.allclose(r.staves[1].lines, TAB_LINES, atol=1.0)
+
+    moving = tmp_path / "moving"
+    seq, truth = shifted_video([0, 5, 11, 16], per=5, second=-120)
+    write_frames(moving, seq)
+    r = strip.detect(list_frames(moving))
+    assert_positions(r, truth, lines=(second, TAB_LINES))
+    assert_band_holds_lines(r, truth, lines=(second, TAB_LINES))
+
+
+def test_strip_video_only_with_many_frames_raises_no_tab_found(tmp_path):
+    rng = np.random.default_rng(1)
+    write_frames(tmp_path, [video_noise(rng).astype(np.uint8) for _ in range(30)])
+    with pytest.raises(strip.NoTabFound):
+        strip.detect(list_frames(tmp_path))
+
+
+def test_segments_absorb_only_runs_of_one_frame():
+    frames = list(range(1, 10))
+    # 位置の分からないフレームは直前の区間に入る。フレーム 3〜5 の 3 枚の区間は吸収しない
+    assert strip._segments(frames, [0, 0, 4, None, None, 0, 0, 10, 10], 1.05) == [
+        (1, 2, 0.0),
+        (3, 5, 4.0),
+        (6, 7, 0.0),
+        (8, 9, 10.0),
+    ]
+    # 同じ位置に挟まれた 1 フレームだけの区間は吸収する
+    located = [0, 0, 4, 0, 0, 10, 10]
+    assert strip._segments(frames[:7], located, 1.05) == [(1, 5, 0.0), (6, 7, 10.0)]
+    # そのフレームが両隣の位置より自分の位置によく当てはまるなら残す
+    seen = []
+    keep = strip._segments(frames[:7], located, 1.05, lambda pos, d: seen.append((pos, d)) or True)
+    assert keep == [(1, 2, 0.0), (3, 3, 4.0), (4, 5, 0.0), (6, 7, 10.0)]
+    assert seen == [(2, 0.0)]
+
+
+def test_strip_keeps_one_frame_page_at_its_own_position(tmp_path):
+    # 繰り返しの 1 番かっこへ飛ぶ所などで、1 フレームだけ別のページが別の位置に出る
+    truth = [0] * 4 + [11] + [0] * 4
+    seeds = [0] * 4 + [1] + [2] * 4
+    seq = [frame(s, dy=dy, cursor_x=40 + 60 * n, rng_seed=n) for n, (s, dy) in enumerate(zip(seeds, truth))]
+    write_frames(tmp_path, seq)
+    frames, r, setup = moving_setup(tmp_path)
+    assert_positions(r, truth)
+    assert [(a, b) for a, b, _ in r.shifts] == [(1, 4), (5, 5), (6, 9)]
+    det = pages.detect_pages(frames, setup)
+    assert det.no_tab == []
+    assert starts(det) == [1, 5, 6]
+
+
+def test_strip_moving_staff_with_extra_line_and_wider_spacing(tmp_path):
+    # あるページだけ、タブの線の間隔が基準より 2% ほど広く、1 弦の 1 間隔上に同じ間隔の線がもう 1 本ある。
+    # 基準の間隔で当てると、外側の線（下の 6 弦）が予測の位置から許容差より離れ、1 本上にずれた組が勝ちやすい
+    spacing = 7 * 1.022
+    wide = [276.6 + spacing * m for m in range(6)]
+    seq, truth = [], []
+    for page, (dy, lines) in enumerate([(0, TAB_LINES), (7, TAB_LINES), (4, wide), (12, TAB_LINES)]):
+        extra = (wide[0] - spacing,) if lines is wide else ()
+        for k in range(4):
+            n = len(seq)
+            seq.append(frame(page, dy=dy, tab_lines=lines, extra_lines=extra, staff=False, rng_seed=n))
+            truth.append([y + dy for y in lines])
+    write_frames(tmp_path, seq)
+    r = strip.detect(list_frames(tmp_path))
+    assert len(r.staves) == 1 and np.isclose(r.staves[0].spacing, 7, atol=0.5)
+    for i, want in enumerate(truth, start=1):
+        got = np.array(r.staves[0].lines) + shift_at(r.shifts, i)
+        assert np.allclose(got, want, atol=1.0), (i, got, want)
+
+
+# --- 段が動く動画の pages・zoom・cmd_strip
+
+
+def moving_workdir(tmp_path, intro=2, name="moving"):
+    """前奏 intro 枚・4 ページ（中身が同じで位置だけ違うページを含む）・終わり 2 枚の動画。
+
+    戻り値は作業フォルダ、フレームごとの正解の dy（タブのない画面は None）。
+    """
+    wd = tmp_path / name
+    seeds, dys = [0, 1, 1, 2], [0, 7, 3, 18]
+    seq = [video_noise(np.random.default_rng(50 + k)).astype(np.uint8) for k in range(intro)]
+    truth = [None] * intro
+    for seed, dy in zip(seeds, dys):
+        for k in range(4):
+            seq.append(frame(seed, dy=dy, cursor_x=40 + 150 * k, rng_seed=len(seq)))
+            truth.append(dy)
+    seq += [video_noise(np.random.default_rng(60 + k)).astype(np.uint8) for k in range(2)]
+    truth += [None, None]
+    write_frames(wd, seq)
+    return wd, truth
+
+
+def moving_setup(workdir):
+    frames = list_frames(workdir)
+    r = strip.detect(frames)
+    shifts = [list(s) for s in r.shifts]
+    return frames, r, pages.Setup(r.band, r.polarity, r.background, [s.lines for s in r.staves], shifts)
+
+
+def marks(im, x, colors):
+    """画像の x 列で、印の色が続く行の真ん中を上から順に返す。"""
+    px = np.asarray(im.convert("RGB"))[:, x]
+    on = np.array([tuple(int(v) for v in p) in colors for p in px])
+    padded = np.concatenate([[False], on, [False]]).astype(np.int8)
+    edges = np.flatnonzero(np.diff(padded))
+    return [(a + b - 1) / 2 for a, b in zip(edges[::2], edges[1::2])]
+
+
+PAGE_MARKS = {(255, 210, 0), (0, 220, 255)}
+CHECK_MARKS = {(0, 200, 0), (0, 120, 255)}
+
+
+def zoomed(y, band, scale):
+    return round((y - band[0] + 0.5) * scale - 0.5, 1)
+
+
+def test_pages_follow_moving_staff(tmp_path):
+    wd, truth = moving_workdir(tmp_path)
+    frames, r, setup = moving_setup(wd)
+    assert setup.shifts
+    det = pages.detect_pages(frames, setup)
+    assert [f.index for f in det.no_tab] == [1, 2, 19, 20]  # タブのあるフレームは no_tab に入らない
+    assert starts(det) == [3, 7, 11, 15]  # 中身が同じで位置だけ違うページ（7 と 11）も区切る
+    # 差がしきい値以下でも、位置の変わる所では必ず区切る
+    assert starts(pages.detect_pages(frames, setup, threshold=1.0)) == [3, 7, 11, 15]
+
+
+def test_write_pages_marks_each_page_at_its_own_lines(tmp_path):
+    from PIL import Image
+
+    wd, truth = moving_workdir(tmp_path)
+    frames, r, setup = moving_setup(wd)
+    det = pages.detect_pages(frames, setup)
+    out = pages.write_pages(wd, frames, setup, det)
+    data = json.loads((out / "pages.json").read_text(encoding="utf-8"))
+    scale, band = data["scale"], data["band"]
+    assert data["lines"] == pages.layout(setup, 640).lines  # 最上位は基準の位置のまま
+    for p in data["pages"]:
+        dy = truth[p["pick"] - 1]
+        want = [zoomed(y + dy, band, scale) for y in TAB_LINES]
+        assert np.allclose(p["lines"][0], want, atol=scale), (p["page"], p["lines"], want)
+        im = Image.open(out / p["images"][0])
+        assert np.allclose(marks(im, pages.MARGIN - 5, PAGE_MARKS), want, atol=scale), p["page"]
+    index = (out / "index.md").read_text(encoding="utf-8")
+    assert "| ページ | 時刻 | フレーム | 画像 | 弦の線（1〜6 弦の y） | 注意 |" in index
+    assert "弦の線の位置はページによって違う" in index
+    row = next(line for line in index.splitlines() if line.startswith("| 4 |"))
+    assert ", ".join(f"{y:g}" for y in data["pages"][3]["lines"][0]) in row
+
+    # 動かない動画では、各ページの lines は基準と同じで、一覧は今までどおり
+    fixed = tmp_path / "fixed"
+    write_frames(fixed, [frame(k // 3, rng_seed=k) for k in range(6)])
+    frames, _, setup = detect_setup(fixed)
+    out = pages.write_pages(fixed, frames, setup, pages.detect_pages(frames, setup))
+    data = json.loads((out / "pages.json").read_text(encoding="utf-8"))
+    assert all(p["lines"] == data["lines"] for p in data["pages"])
+    index = (out / "index.md").read_text(encoding="utf-8")
+    assert "| ページ | 時刻 | フレーム | 画像 | 注意 |" in index and "弦の線（" not in index
+
+
+def test_zoom_frame_marks_lines_of_that_frame(tmp_path):
+    from PIL import Image
+
+    wd, truth = moving_workdir(tmp_path)
+    frames, r, setup = moving_setup(wd)
+    scale = pages.layout(setup, 640).scale
+    for f in (frames[2], frames[16]):  # 位置 0 と 18 のフレーム
+        paths = pages.zoom_frame(wd, f, setup)
+        want = [zoomed(y + truth[f.index - 1], setup.band, scale) for y in TAB_LINES]
+        assert np.allclose(marks(Image.open(paths[0]), pages.MARGIN - 5, PAGE_MARKS), want, atol=scale), f.index
+
+
+def test_setup_from_meta_shifts(tmp_path):
+    strip_meta = {"band": [240, 350], "polarity": -1, "background": [252, 252, 252], "staves": [TAB_LINES]}
+    setup = pages.Setup.from_meta({"strip": strip_meta})
+    assert setup.shifts == [] and setup.dy(5) == 0.0
+
+    write_frames(tmp_path, [frame(0, rng_seed=k) for k in range(6)])
+    frames = list_frames(tmp_path)
+    moving = dict(strip_meta, shifts=[[1, 3, 0.0], [4, 6, 7.0]])
+    setup = pages.Setup.from_meta({"strip": moving}, frames)
+    assert [setup.dy(i) for i in range(1, 7)] == [0, 0, 0, 7, 7, 7]
+    # 画像を作り直してフレーム数が変わったら、strip のやり直しを求める
+    write_frames(tmp_path, [frame(0, rng_seed=k) for k in range(8)])
+    with pytest.raises(SystemExit, match="strip をやり直してください"):
+        pages.Setup.from_meta({"strip": moving}, list_frames(tmp_path))
+    (tmp_path / "meta.json").write_text(json.dumps({"id": "x", "strip": moving}), encoding="utf-8")
+    for argv in (["pages", str(tmp_path)], ["zoom", str(tmp_path), "1"]):
+        with pytest.raises(SystemExit, match="strip をやり直してください"):
+            cli.main(argv)
+
+
+def test_cmd_strip_writes_shifts_only_for_moving_staff(tmp_path, capsys):
+    from PIL import Image
+
+    wd, truth = moving_workdir(tmp_path)
+    assert cli.main(["strip", str(wd)]) == 0
+    printed = capsys.readouterr().out
+    meta = json.loads((wd / "meta.json").read_text(encoding="utf-8"))["strip"]
+    shifts = meta["shifts"]
+    assert shifts[0][0] == 1 and shifts[-1][1] == len(truth)
+    assert list(meta) == ["band", "polarity", "background", "staves", "shifts"]
+    assert "線の位置はページによって上下に動きます: 1 弦 y=" in printed and "タブ 1 段目（基準）" in printed
+    # 確認用の画像は、いちばん上と下の位置のフレームを含み、印はその画像のフレームの線の上にある
+    checks = sorted((wd / "strip").glob("check_*.png"))
+    picked = [int(p.stem.split("_")[1]) for p in checks]
+    assert {truth[i - 1] for i in picked} >= {0, 18}
+    for p, i in zip(checks, picked):
+        want = [y + truth[i - 1] for y in TAB_LINES]
+        assert np.allclose(marks(Image.open(p), 2, CHECK_MARKS), want, atol=1.0), p.name
+    assert cli.main(["pages", str(wd)]) == 0 and cli.main(["zoom", str(wd), "17"]) == 0
+
+    # 前奏が長く、前奏が最初の区間の大半を占めても、確認用の画像はタブの見えるフレームから選ぶ
+    long_intro, truth = moving_workdir(tmp_path, intro=8, name="long_intro")
+    assert cli.main(["strip", str(long_intro)]) == 0
+    picked = [int(p.stem.split("_")[1]) for p in sorted((long_intro / "strip").glob("check_*.png"))]
+    assert all(truth[i - 1] is not None for i in picked)
+
+    fixed = tmp_path / "fixed"
+    write_frames(fixed, [frame(k // 3, rng_seed=k) for k in range(6)])
+    capsys.readouterr()
+    assert cli.main(["strip", str(fixed)]) == 0
+    printed = capsys.readouterr().out
+    assert "shifts" not in json.loads((fixed / "meta.json").read_text(encoding="utf-8"))["strip"]
+    assert "動きます" not in printed and "基準" not in printed

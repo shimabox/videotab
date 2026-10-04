@@ -40,14 +40,27 @@ class Setup:
     band: tuple[int, int]
     polarity: int
     background: tuple[int, int, int]
-    staves: list[list[float]]
+    staves: list[list[float]]  # 基準の線の位置
+    # ページによって段が上下に動く動画だけ: [最初のフレーム番号, 最後のフレーム番号, dy] の並び
+    shifts: list[list] = field(default_factory=list)
 
     @classmethod
-    def from_meta(cls, meta: dict) -> "Setup":
+    def from_meta(cls, meta: dict, frames: list[Frame] | None = None) -> "Setup":
+        """meta.json の strip から作る。frames を渡すと、shifts が今のフレームと合うかを確かめる。"""
         s = meta.get("strip")
         if not s:
             raise SystemExit("帯の位置がまだ決まっていません（先に videotab strip）")
-        return cls(tuple(s["band"]), s["polarity"], tuple(s["background"]), s["staves"])
+        shifts = s.get("shifts") or []
+        if frames and shifts and shifts[-1][1] != frames[-1].index:
+            raise SystemExit(
+                f"線の位置はフレーム {shifts[-1][1]} までの分しかありません（画像は {frames[-1].index} 枚）。"
+                "画像を作り直したときは strip をやり直してください"
+            )
+        return cls(tuple(s["band"]), s["polarity"], tuple(s["background"]), s["staves"], shifts)
+
+    def dy(self, index: int) -> float:
+        """フレーム番号 index の線の、基準からの上下のずれ（shifts がなければ 0）。"""
+        return float(next((d for a, b, d in self.shifts if a <= index <= b), 0.0))
 
     @property
     def bg_gray(self) -> float:
@@ -105,8 +118,8 @@ def _longest_run(mask: np.ndarray) -> int:
     return int((edges[1::2] - edges[::2]).max())
 
 
-def has_tab(gray: np.ndarray, setup: Setup, floor: float = 3.0) -> bool:
-    """帯の中に、strip で見つけたタブの線が見えているか。
+def has_tab(gray: np.ndarray, setup: Setup, floor: float = 3.0, dy: float = 0.0) -> bool:
+    """帯の中に、strip で見つけたタブの線が見えているか。dy はそのフレームの基準からのずれ。
 
     線の行に、上下より濃い（明るい）画素が横に長く続く所があるかで見る。和音で線が
     埋まった画面や、横幅の途中で終わる最後のページでも、数字の間に線は続いている。
@@ -119,6 +132,7 @@ def has_tab(gray: np.ndarray, setup: Setup, floor: float = 3.0) -> bool:
     y0 = setup.band[0]
     hits = 0
     for y in setup.staves[0]:
+        y += dy
         best = 0
         for row in range(int(round(y)) - y0 - 1, int(round(y)) - y0 + 2):
             if row - k < 0 or row + k >= h:
@@ -199,7 +213,8 @@ class Detection:
 
 def detect_pages(frames: list[Frame], setup: Setup, threshold: float | None = None) -> Detection:
     grays = [band_gray(f, setup) for f in frames]
-    tab = [has_tab(g, setup) for g in grays]
+    dys = [setup.dy(f.index) for f in frames]
+    tab = [has_tab(g, setup, dy=d) for g, d in zip(grays, dys)]
     inks = [ink_map(g, setup) for g in grays]
 
     diffs = [0.0] + [ink_diff(inks[i], inks[i - 1]) for i in range(1, len(frames))]
@@ -208,12 +223,13 @@ def detect_pages(frames: list[Frame], setup: Setup, threshold: float | None = No
     # ずらして比べるのは、ふだんの揺れよりはっきり大きい差のときだけ
     floor = max(0.008, 2 * float(np.median(tab_diffs))) if len(tab_diffs) else 0.008
 
-    # タブが見えているフレームを、今のページの最初のフレームとの差で区切る
+    # タブが見えているフレームを、今のページの最初のフレームとの差で区切る。
+    # 線の位置が変わる所（strip の shifts の区間の境目）では、差が小さくても必ず区切る
     segments: list[list[int]] = []
     for i in range(len(frames)):
         if not tab[i]:
             continue
-        if segments and segments[-1][-1] == i - 1:
+        if segments and segments[-1][-1] == i - 1 and dys[i] == dys[segments[-1][0]]:
             d = ink_diff(inks[i], inks[segments[-1][0]])
             scrolled = floor < d <= thr and shifted_diff(inks[segments[-1][-1]], inks[i]) < diffs[i]
             if d <= thr and not scrolled:
@@ -257,9 +273,13 @@ def layout(setup: Setup, width: int) -> Layout:
         n = math.ceil((width - overlap) / (piece_w - overlap))
         step = (width - piece_w) / (n - 1)
         pieces = [(round(i * step), round(i * step) + piece_w) for i in range(n)]
+    return Layout(scale, pieces, zoomed_lines(setup, scale))
+
+
+def zoomed_lines(setup: Setup, scale: float, dy: float = 0.0) -> list[list[float]]:
+    """基準から dy ずれた位置の弦の線の、拡大画像の上での y（段ごと）。"""
     y0 = setup.band[0]
-    lines = [[round((y - y0 + 0.5) * scale - 0.5, 1) for y in st] for st in setup.staves]
-    return Layout(scale, pieces, lines)
+    return [[round((y + dy - y0 + 0.5) * scale - 0.5, 1) for y in st] for st in setup.staves]
 
 
 def _font(size: int):
@@ -269,7 +289,11 @@ def _font(size: int):
         return ImageFont.load_default()
 
 
-def render_piece(rgb: np.ndarray, setup: Setup, lay: Layout, piece: int) -> Image.Image:
+def render_piece(rgb: np.ndarray, setup: Setup, lay: Layout, piece: int, dy: float = 0.0) -> Image.Image:
+    """帯の横の 1 区切りを拡大し、左の余白に弦の番号と線の印を書く。
+
+    切り出す範囲と倍率は全ページ共通。印だけを、その画像のフレームの基準からのずれ dy に合わせて動かす。
+    """
     x0, x1 = lay.pieces[piece]
     y0, y1 = setup.band
     crop = Image.fromarray(rgb[y0:y1, x0:x1].astype(np.uint8))
@@ -281,6 +305,7 @@ def render_piece(rgb: np.ndarray, setup: Setup, lay: Layout, piece: int) -> Imag
     font = _font(max(12, int(TARGET_SPACING * 0.6)))
     for st in lay.lines:
         for n, y in enumerate(st, start=1):
+            y += dy * lay.scale
             color = (255, 210, 0) if n % 2 else (0, 220, 255)
             d.line([MARGIN - 10, y, MARGIN - 1, y], fill=color, width=2)
             d.text((4, y), str(n), fill=color, font=font, anchor="lm")
@@ -312,7 +337,7 @@ def _write_pages(workdir: Path, out: Path, folder: inside.Folder, frames, setup:
         rgb = load_rgb(page.pick.path)
         for i in range(len(lay.pieces)):
             name = f"p{page.number:03d}_{piece_label(i)}.png"
-            inside.write_image(folder, name, render_piece(rgb, setup, lay, i), notify=print)
+            inside.write_image(folder, name, render_piece(rgb, setup, lay, i, setup.dy(page.pick.index)), notify=print)
             page.images.append(name)
 
     step = frames[1].time - frames[0].time if len(frames) > 1 else 1.0
@@ -331,6 +356,8 @@ def _write_pages(workdir: Path, out: Path, folder: inside.Folder, frames, setup:
                 "pick": p.pick.index,
                 "images": p.images,
                 "long": p.duration > LONG_PAGE,
+                # このページの拡大画像の上での弦の線（最上位の lines は基準の位置）
+                "lines": zoomed_lines(setup, lay.scale, setup.dy(p.pick.index)),
             }
             for p in det.pages
         ],
@@ -343,34 +370,49 @@ def _write_pages(workdir: Path, out: Path, folder: inside.Folder, frames, setup:
 
 
 def index_markdown(workdir: Path, data: dict) -> str:
-    lines_desc = " / ".join(
-        "段{}: {}".format(k + 1, ", ".join(f"{n}弦 y={y:g}" for n, y in enumerate(st, start=1)))
-        for k, st in enumerate(data["lines"])
-    )
+    # ページによって線の位置が違うときだけ、表に「弦の線」の列を足す（同じなら今までどおりの一覧）
+    moving = any(p.get("lines", data["lines"]) != data["lines"] for p in data["pages"])
+    if moving:
+        lines_row = "- 弦の線の位置はページによって違う（表を参照）。拡大画像の左の余白の番号と印は、そのページの位置に付く"
+    else:
+        lines_desc = " / ".join(
+            "段{}: {}".format(k + 1, ", ".join(f"{n}弦 y={y:g}" for n, y in enumerate(st, start=1)))
+            for k, st in enumerate(data["lines"])
+        )
+        lines_row = f"- 拡大画像の上の弦の線: {lines_desc}（左の余白の番号と印）"
     rows = [
         f"# ページ一覧（{workdir.name}）",
         "",
         f"- 拡大率 {data['scale']}×、帯 y={data['band'][0]}〜{data['band'][1]}、"
         f"横の分割 {', '.join(f'{piece_label(i)}: x={a}〜{b}' for i, (a, b) in enumerate(data['pieces']))}",
-        f"- 拡大画像の上の弦の線: {lines_desc}（左の余白の番号と印）",
+        lines_row,
         f"- 切り替えのしきい値 {data['threshold']}。タブの見えないフレーム {len(data['no_tab_frames'])} 枚、"
         f"切り替え途中として除いたフレーム {len(data['dropped_blend_frames'])} 枚",
         "- 「長い」は同じページと判定された時間が長い所。切り替えの取りこぼしを疑い、元フレームも見る。",
         "",
-        "| ページ | 時刻 | フレーム | 画像 | 注意 |",
-        "|---|---|---|---|---|",
     ]
+    if moving:
+        rows += ["| ページ | 時刻 | フレーム | 画像 | 弦の線（1〜6 弦の y） | 注意 |", "|---|---|---|---|---|---|"]
+    else:
+        rows += ["| ページ | 時刻 | フレーム | 画像 | 注意 |", "|---|---|---|---|---|"]
     for p in data["pages"]:
         a, b = p["frames"]
-        rows.append(
-            f"| {p['page']} | {fmt_time(p['start'])}〜{fmt_time(p['end'])} | {a}〜{b}（拡大は {p['pick']}） "
-            f"| {' '.join(p['images'])} | {'長い' if p['long'] else ''} |"
-        )
+        cells = [
+            str(p["page"]),
+            f"{fmt_time(p['start'])}〜{fmt_time(p['end'])}",
+            f"{a}〜{b}（拡大は {p['pick']}）",
+            " ".join(p["images"]),
+        ]
+        if moving:
+            cells.append(" / ".join(", ".join(f"{y:g}" for y in st) for st in p["lines"]))
+        cells.append("長い" if p["long"] else "")
+        rows.append("| " + " | ".join(cells) + " |")
     return "\n".join(rows) + "\n"
 
 
 def zoom_frame(workdir: Path, frame: Frame, setup: Setup) -> list[Path]:
     """1 フレームを pages と同じ倍率・分割で拡大する（色枠に隠れた数字の確認などに使う）。
+    左の余白の印は、そのフレームの線の位置に付ける。
 
     読み取りのエージェントから実行されたときは、フレームの画像が作業フォルダの外を指していれば断る
     （confine）。出力のフォルダは、閉じ込めの有無によらず、作業フォルダの外を指していれば断り、
@@ -384,6 +426,6 @@ def zoom_frame(workdir: Path, frame: Frame, setup: Setup) -> list[Path]:
     with inside.open_dir(root, inside.rel_path(root, workdir / "pages" / "zoom")) as folder:
         for i in range(len(lay.pieces)):
             name = f"f{frame.index:04d}_{piece_label(i)}.png"
-            inside.write_image(folder, name, render_piece(rgb, setup, lay, i))
+            inside.write_image(folder, name, render_piece(rgb, setup, lay, i, setup.dy(frame.index)))
             paths.append(out / name)
     return paths

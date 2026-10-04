@@ -196,6 +196,31 @@ def _frames_or_exit(workdir: Path):
     return frames
 
 
+def _check_frames(frames, result):
+    """確認用の画像にするフレーム。
+
+    位置が動かなければ動画全体から間引いた 3 枚。動くときは、いちばん上の位置の区間・いちばん下の
+    位置の区間・フレームのいちばん多い区間から、線の位置が見つかったフレームの真ん中を 1 枚ずつ選ぶ
+    （前奏などタブのない画面も前後の区間に入っているので、それを避ける）。
+    """
+    from videotab import strip
+
+    if not result.shifts:
+        return strip.sample_frames(frames, 3)
+    segs = result.shifts
+    chosen = {
+        min(segs, key=lambda s: s[2]),
+        max(segs, key=lambda s: s[2]),
+        max(segs, key=lambda s: s[1] - s[0]),
+    }
+    picks = []
+    for a, b, _ in chosen:
+        inner = [f for f in frames if a <= f.index <= b]
+        inner = [f for f in inner if f.index in result.located] or inner
+        picks.append(inner[len(inner) // 2])
+    return sorted(picks, key=lambda f: f.index)
+
+
 def cmd_strip(args) -> int:
     from videotab import confine, inside, strip
     from videotab.workdir import fmt_time
@@ -214,22 +239,32 @@ def cmd_strip(args) -> int:
         "background": list(result.background),
         "staves": [[round(y, 1) for y in st.lines] for st in result.staves],
     }
+    if result.shifts:  # ページによって段が上下に動く動画だけ。フレームの区間ごとの基準からのずれ
+        meta["strip"]["shifts"] = [[a, b, d] for a, b, d in result.shifts]
     if args.band:
         meta["strip"]["band_given"] = True  # 通しの実行でやり直しても、手で決めた帯を使う
     save_meta(workdir, meta)
 
     out = workdir / "strip"
-    picks = strip.sample_frames(frames, 3)
+    picks = _check_frames(frames, result)
     # strip/ が作業フォルダの外を指すリンクなら作り直し、リンクをたどらずに書く
     with inside.open_dir(confine.root_of(workdir), "strip", remake=True, notify=print) as folder:
         for f in picks:
-            image = strip.debug_image(strip.load_rgb(f.path), result)
+            image = strip.debug_image(strip.load_rgb(f.path), result, dy=result.dy_at(f.index))
             inside.write_image(folder, f"check_{f.index:04d}.png", image, notify=print)
     kind = "白地に濃い線" if result.polarity < 0 else "暗い地に明るい線"
     print(f"帯: y={result.band[0]}〜{result.band[1]}（{kind}、地の色 {result.background}）")
+    if result.shifts:
+        top = result.staves[0].lines[0]
+        ds = [d for _, _, d in result.shifts]
+        print(
+            f"線の位置はページによって上下に動きます: 1 弦 y={top + min(ds):.1f}〜{top + max(ds):.1f}"
+            f"（区間 {len(result.shifts)} 個）"
+        )
+    mark = "（基準）" if result.shifts else ""
     for k, st in enumerate(result.staves, start=1):
         ys = ", ".join(f"{y:.1f}" for y in st.lines)
-        print(f"タブ {k} 段目: 1〜6 弦の線 y={ys}（間隔 {st.spacing:.2f}px）")
+        print(f"タブ {k} 段目{mark}: 1〜6 弦の線 y={ys}（間隔 {st.spacing:.2f}px）")
     print(f"タブが見えたフレーム: {result.frames_with_tab}/{result.frames_used}（間引いて調べた枚数）")
     print(f"確認用の画像: {out}/check_*.png（" + ", ".join(fmt_time(f.time) for f in picks) + "）")
     print(f"次: videotab pages {workdir}")
@@ -241,7 +276,7 @@ def cmd_pages(args) -> int:
 
     workdir = resolve_target(args.target)
     frames = _frames_or_exit(workdir)
-    setup = pages.Setup.from_meta(load_meta(workdir))
+    setup = pages.Setup.from_meta(load_meta(workdir), frames)
     det = pages.detect_pages(frames, setup, threshold=args.threshold)
     out = pages.write_pages(workdir, frames, setup, det)
     longs = [p.number for p in det.pages if p.duration > pages.LONG_PAGE]
@@ -259,8 +294,9 @@ def cmd_zoom(args) -> int:
 
     with confine.short_errors():
         workdir = _reader_target(args.target) or resolve_target(args.target)
-        setup = pages.Setup.from_meta(load_meta(workdir))
-        frame = next((f for f in list_frames(workdir) if f.index == args.frame), None)
+        frames = list_frames(workdir)
+        setup = pages.Setup.from_meta(load_meta(workdir), frames)
+        frame = next((f for f in frames if f.index == args.frame), None)
         if frame is None:
             raise SystemExit(f"フレーム {args.frame} がありません")
         for p in pages.zoom_frame(workdir, frame, setup):
