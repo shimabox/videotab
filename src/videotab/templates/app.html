@@ -1072,9 +1072,12 @@
       stop.disabled = !!d.stopping || cancelingId !== null;
     }
     var head = el("div", { class: "head" }, [el("h3", { text: d.title }), pill(d.status), del || stop]);
-    // source_url はサーバーが https のものだけを返す
+    // source_url はサーバーが https のものだけを返す。押す前に行き先が分かるよう、ホスト名を添える
+    var sourceHost = "";
+    try { sourceHost = d.source_url ? new URL(d.source_url).hostname : ""; } catch (e) { sourceHost = ""; }
     var sub = el("p", { class: "sub" }, [
-      d.source_url ? el("a", { href: d.source_url, target: "_blank", rel: "noopener noreferrer", text: "元の動画" }) : null,
+      d.source_url ? el("a", { href: d.source_url, target: "_blank", rel: "noopener noreferrer",
+        text: "元の動画" + (sourceHost ? "（" + sourceHost + "）" : "") }) : null,
       d.source_url ? "　" : null,
       d.creator ? "作成: " + d.creator + "　" : null,
       "読み取り: " + (ENGINE_LABELS[d.engine] || d.engine) + choiceText(d),

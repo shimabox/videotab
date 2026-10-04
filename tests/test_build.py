@@ -172,6 +172,16 @@ def test_build_credits_creator_without_link(tmp_path):
     assert "元動画: Song（作成: Creator）<br>" in html and "javascript:" not in html
 
 
+def test_source_link_is_checked_like_the_upload(tmp_path):
+    # meta.json は読み手も書けるので、使うたびに取り込み時と同じ検査に通す
+    ok = "https://example.com/v?x=1"
+    assert build.source_link({"source_url": f"  {ok} "}) == ok
+    for bad in ("javascript:alert(1)", "http://example.com/v", "https://example.com/a b", "https://example.com/\x07",
+                "https://example.com/" + "a" * 2000, ["https://example.com/v"], None, ""):  # fmt: skip
+        assert build.source_link({"source_url": bad}) is None, bad
+    assert build.source_link({}) is None
+
+
 def test_build_without_creator_keeps_plain_credit(tmp_path):
     wd = setup_work(tmp_path)
     write(wd / "parts" / "part_A.json", {"1": "r.1"})

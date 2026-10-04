@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from videotab import confine, inside
+from videotab import add, confine, inside
 from videotab.alphatex import Issue, check_bars, move_note_effects
 from videotab.render import render_html
 from videotab.workdir import create_json, load_meta, read_json, write_json
@@ -174,14 +174,15 @@ def video_creator(meta: dict) -> str | None:
 
 
 def source_link(meta: dict) -> str | None:
-    """元動画のページ。https で始まり空白を含まないリンクだけを使う。
+    """元動画のページ。取り込み時と同じ検査（add.check_link）に通るリンクだけを使う。
 
-    meta.json は読み手も書けるので、取り込み時の検査に頼らず、使うたびに確かめる。
+    https:// で始まり、空白と制御文字を含まず、長すぎないもの。meta.json は読み手も書けるので、
+    取り込み時の検査に頼らず、使うたびに確かめる。
     """
-    url = str(meta.get("source_url") or "").strip()
-    if not url.startswith("https://") or any(c.isspace() for c in url):
+    try:
+        return add.check_link(str(meta.get("source_url") or ""))
+    except ValueError:
         return None
-    return url
 
 
 def print_issues(issues: list[Issue]) -> int:

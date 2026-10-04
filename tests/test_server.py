@@ -764,6 +764,13 @@ def test_log_box_is_kept_between_refreshes_so_the_reading_position_stays():
     assert "innerHTML" not in update
 
 
+def test_source_link_shows_where_it_goes():
+    # 「元の動画」のリンクは、押す前に行き先が分かるよう、ホスト名を添える（リンクの文言は固定なので）
+    render = page_section("一覧と詳細").split("function renderDetail(")[1].split("\n  }\n")[0]
+    assert "sourceHost = d.source_url ? new URL(d.source_url).hostname : \"\";" in render
+    assert 'text: "元の動画" + (sourceHost ? "（" + sourceHost + "）" : "")' in render
+
+
 def test_retry_row_has_title_named_fields_and_button_saying_the_step():
     import re
     from importlib import resources
