@@ -60,6 +60,19 @@ def test_codex_cannot_write_to_temporary_folders(tmp_path):
         assert value in configs, value
     assert "--ignore-user-config" in cmd
 
+def test_codex_keeps_only_shell_and_image_viewing(tmp_path):
+    cmd = agent._codex_command("読む", tmp_path, tmp_path / "last.txt")
+    configs = [cmd[i + 1] for i, a in enumerate(cmd[:-1]) if a == "-c"]
+    # sandbox のネットワークの制限はシェルのコマンドにしか効かないので、ほかの機能と web 検索を切る
+    for name in ("apps", "plugins", "remote_plugin", "tool_suggest", "multi_agent", "image_generation",
+                 "browser_use", "computer_use", "hooks", "skill_mcp_dependency_install", "shell_snapshot"):  # fmt: skip
+        assert f"features.{name}=false" in configs, name
+    assert 'web_search="disabled"' in configs
+    # シェルのコマンドには、秘密らしい名前の環境変数を渡さない
+    assert "shell_environment_policy.ignore_default_excludes=false" in configs
+    assert not any(c.startswith(("features.shell_tool", "features.unified_exec")) for c in configs)  # シェルは残す
+    assert "--enable" not in cmd and "--add-dir" not in cmd
+
 def test_videotab_check_refuses_paths_outside_confined_folder(tmp_path, monkeypatch):
     from videotab import cli
 
@@ -208,6 +221,9 @@ def base_codex_command(tmp_path):
         "-c", "sandbox_workspace_write.network_access=false",
         "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
         "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+        *[arg for name in agent.CODEX_FEATURES_OFF for arg in ("-c", f"features.{name}=false")],
+        "-c", 'web_search="disabled"',
+        "-c", "shell_environment_policy.ignore_default_excludes=false",
         "--skip-git-repo-check", "--color", "never",
         "-C", str(tmp_path.resolve()), "-o", str((tmp_path / "last.txt").resolve()), "読む",
     ]  # fmt: skip

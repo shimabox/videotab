@@ -12,6 +12,9 @@ Codex は利用者の設定（~/.codex/config.toml）を読まずに workspace-w
 /tmp と $TMPDIR も外す（$TMPDIR には videotab 本体やほかのプログラムの一時ファイルがある）。
 書けるのは作業フォルダの中だけだが、読むことと、sandbox の中でのコマンドの実行は制限しきれない。
 一時フォルダを外した効果を確かめたのは macOS・codex-cli 0.158.0 で、Linux では確かめていない。
+sandbox のネットワークの制限が効くのはシェルのコマンドだけなので、シェルと画像を見ること以外の
+機能（ChatGPT のコネクタ・プラグイン・web 検索など）は、起動の引数で切る（CODEX_FEATURES_OFF）。
+シェルのコマンドには、名前に KEY・SECRET・TOKEN を含む環境変数を渡さない。
 
 どちらも環境変数 VIDEOTAB_CONFINE に作業フォルダを入れて起動する。読み手が実行する
 videotab check / zoom は、これより外のパスを受け付けない（Claude Code の許可はサブコマンド
@@ -46,6 +49,21 @@ ENGINES = ("claude", "codex")
 DEFAULT_ENGINE = "claude"
 CONFINE_ENV = "VIDEOTAB_CONFINE"
 TIMEOUT = 60 * 60  # 1 回の起動の上限（秒）
+# Codex の読み手で切る機能（-c features.<名前>=false。その版の Codex に無い名前は無視される）。
+# 読み取りに要るのは、シェル（videotab check / zoom）と画像を見ることだけ
+CODEX_FEATURES_OFF = (
+    "apps",  # ChatGPT のコネクタ。sandbox のネットワークの制限が効かない
+    "plugins",
+    "remote_plugin",
+    "tool_suggest",  # プラグインの導入の提案
+    "multi_agent",
+    "image_generation",
+    "browser_use",
+    "computer_use",
+    "hooks",
+    "skill_mcp_dependency_install",
+    "shell_snapshot",  # 起動時に、利用者のログインシェルを作業フォルダで実行して環境を写し取る
+)
 
 
 def available_engines() -> dict[str, bool]:
@@ -98,8 +116,11 @@ def _codex_command(
     # 利用者の設定を読まず、書けるのは作業フォルダの中だけ（workspace-write の範囲）に固定する。
     # workspace-write は既定で /tmp と $TMPDIR にも書けるので、exclude_* で外す（writable_roots=[] では
     # 外れない）。-o の最後の返答は sandbox の外の codex 本体が書くので、$TMPDIR に置いたままでよい。
+    # network_access=false が効くのはシェルのコマンドだけなので、ほかの機能と web 検索は別に切る。
+    # シェルのコマンドには、名前に KEY・SECRET・TOKEN を含む環境変数を渡さない（Codex の既定は渡す）。
     # モデルと推論の強さだけは、videotab が読んだ値を引数で渡す
     extra = codex_args(settings) if settings is not None else []
+    features_off = [arg for name in CODEX_FEATURES_OFF for arg in ("-c", f"features.{name}=false")]
     return [
         "codex", "exec", "--ignore-user-config", "--ignore-rules",
         "--sandbox", "workspace-write",
@@ -107,6 +128,9 @@ def _codex_command(
         "-c", "sandbox_workspace_write.network_access=false",
         "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
         "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+        *features_off,
+        "-c", 'web_search="disabled"',
+        "-c", "shell_environment_policy.ignore_default_excludes=false",
         *extra,
         "--skip-git-repo-check", "--color", "never",
         "-C", str(workdir.resolve()), "-o", str(last_message.resolve()), prompt,

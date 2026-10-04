@@ -24,6 +24,11 @@
 - 書けるのは作業フォルダの中だけです。`workspace-write` の sandbox は既定で `/tmp` と `$TMPDIR` にも書けるので、この 2 つを書き込み先から外します（`-c sandbox_workspace_write.exclude_slash_tmp=true` と `-c sandbox_workspace_write.exclude_tmpdir_env_var=true`）。`$TMPDIR` には、videotab 本体が Codex の最後の返答を受け取るファイルや、ほかのプログラムの一時ファイルがあるためです。最後の返答のファイルは sandbox の外の Codex 本体が書くので、受け取れます。
 - 一時フォルダを外した効果を確かめた環境は macOS・codex-cli 0.158.0 です。Linux では確かめていません。
 - 読み取りの AI が実行する `videotab check` / `zoom` は一時フォルダを使わず、作業フォルダの中だけに書きます。
+- sandbox のネットワークの制限が効くのは、シェルのコマンドだけです。そこで、読み取りに要らない機能を起動の引数で切ります。残るのは、シェルと、画像を見ることです。
+  - 機能（`-c features.<名前>=false`）: ChatGPT のコネクタ（`apps`）、プラグイン（`plugins`・`remote_plugin`・`tool_suggest`）、サブエージェント（`multi_agent`）、画像の生成（`image_generation`）、ブラウザとコンピュータの操作（`browser_use`・`computer_use`）、フック（`hooks`）、スキルが求める MCP の導入（`skill_mcp_dependency_install`）、ログインシェルの環境の写し取り（`shell_snapshot`）
+  - web 検索（`-c web_search="disabled"`）
+- シェルのコマンドには、名前に KEY・SECRET・TOKEN を含む環境変数を渡しません（`-c shell_environment_policy.ignore_default_excludes=false`）。ほかの環境変数は渡ります。
+- 上の 2 つの引数が効くことを確かめた環境は codex-cli 0.159.3 です（`codex features list` に同じ引数を付けて確認）。その版の Codex に無い機能の名前は、無視されます。
 - ファイルを読むことと、sandbox の中でのコマンドの実行は制限しきれません。
 
 ### videotab check / zoom
