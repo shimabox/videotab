@@ -137,6 +137,23 @@ def test_full_bar_rest_fits_any_time_signature():
 
 
 @pytest.mark.parametrize(
+    "tex",
+    ["(7.3{d}).4 (7.3).8 (7.3).2", "(7.3{gr}).16 (7.3).1", "(7.3{tu 3}).8*3 (7.3).2 {d}", "(7.3 0.6{dd}).4 (7.3).16 (7.3).2"],
+)
+def test_beat_effects_written_inside_a_note_count_for_the_length(tex):
+    # alphaTab は音の中に書いた拍の効果（付点・装飾音・連符）も拍に付ける
+    issues, parsed = check_bars({1: tex})
+    assert issues == []
+    assert parsed[1].length() == 4
+
+
+def test_note_effects_inside_a_note_stay_on_the_note():
+    # 音の効果でもある名前（{v}）は拍の効果として扱わない
+    _, parsed = check_bars({1: "(7.3{v}).1"})
+    assert parsed[1].beats[0].beat_effects == {}
+
+
+@pytest.mark.parametrize(
     "tex", ["\\tempo r.1", "\\ts 3 r.1", "\\rc r.1", "\\rc (0.6).1", "\\ae r.1", "\\ts 3 5 r.1"]
 )
 def test_metadata_without_required_values_is_an_error(tex):

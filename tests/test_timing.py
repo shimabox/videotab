@@ -58,3 +58,19 @@ def test_full_bar_rest_takes_the_time_signature_length():
     sched = schedule(parsed(bars), tempo=60)
     assert sched.starts[2] == [3.0]
     assert sched.total == pytest.approx(6.0)
+
+
+def test_tempo_on_a_full_bar_rest_applies_from_its_bar():
+    # 全休符の拍に付いたテンポも、その小節の頭から効き、後ろの小節にも続く
+    bars = {1: "r.1 {tempo 60}", 2: "r.1"}
+    sched = schedule(parsed(bars), tempo=120)
+    assert sched.starts[2] == [4.0]
+    assert sched.total == pytest.approx(8.0)
+    # 拍子ぶんの長さはそのまま
+    sched = schedule(parsed({1: "\\ts 3 4 r.1 {tempo 60}", 2: "r.1"}), tempo=120)
+    assert sched.starts[2] == [3.0]
+
+
+def test_tempo_written_inside_a_note_changes_the_tempo():
+    sched = schedule(parsed({1: "(7.3{tempo 60}).1"}), tempo=120)
+    assert sched.total == pytest.approx(4.0)

@@ -168,20 +168,40 @@ class Beat:
     unread: set[str] = field(default_factory=set, compare=False, repr=False)
 
     @property
+    def beat_effects(self) -> dict[str, list]:
+        """拍に効く効果。alphaTab は音の中に書いた拍の効果（{d}・{gr}・{tu 3}・{tempo 60} など）も拍に付ける。
+
+        音の効果でもある名前（{v} など）は音に付くので含めない。同じ名前なら拍の後ろに書いたものを使う。
+        """
+        merged: dict[str, list] = {}
+        for note in self.notes:
+            for name, args in note.effects.items():
+                if name in KNOWN_BEAT_EFFECTS and name not in KNOWN_NOTE_EFFECTS:
+                    merged[name] = args
+        merged.update(self.effects)
+        return merged
+
+    @property
+    def tempo(self) -> float | None:
+        args = self.beat_effects.get("tempo")
+        return float(args[0]) if args else None
+
+    @property
     def is_grace(self) -> bool:
-        return "gr" in self.effects
+        return "gr" in self.beat_effects
 
     def length(self) -> Fraction:
         """4 分音符を 1 とした長さ。装飾音は 0。"""
         if self.is_grace:
             return Fraction(0)
+        effects = self.beat_effects
         v = Fraction(4, self.duration)
-        if "d" in self.effects:
+        if "d" in effects:
             v *= Fraction(3, 2)
-        elif "dd" in self.effects:
+        elif "dd" in effects:
             v *= Fraction(7, 4)
-        if "tu" in self.effects:
-            args = [int(a) for a in self.effects["tu"] if isinstance(a, int)]
+        if "tu" in effects:
+            args = [int(a) for a in effects["tu"] if isinstance(a, int)]
             if args:
                 num = args[0]
                 den = args[1] if len(args) > 1 else DEFAULT_TUPLET_DENOM.get(num, 2)
@@ -241,7 +261,7 @@ class Bar:
             len(self.beats) == 1
             and self.beats[0].rest
             and self.beats[0].duration == 1
-            and not ({"d", "dd", "tu"} & set(self.beats[0].effects))
+            and not ({"d", "dd", "tu"} & set(self.beats[0].beat_effects))
         )
 
     def length(self, time_signature: tuple[int, int] | None = None) -> Fraction:

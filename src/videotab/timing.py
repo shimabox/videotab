@@ -69,11 +69,12 @@ def schedule(bars: dict[int, Bar], tempo: float, time_signature: tuple[int, int]
             bpm = tempo  # 見出しのテンポは 1 小節目に付くので、曲頭へ戻ると戻る
         sched.starts.setdefault(n, []).append(round(t, 3))
         if bar.is_full_bar_rest:
+            # 全休符の拍に付いたテンポも、小節の頭から効く
+            bpm = bar.beats[0].tempo or bpm
             t += float(bar.length(signatures[n])) * 60.0 / bpm
             continue
         for beat in bar.beats:
-            if "tempo" in beat.effects and beat.effects["tempo"]:
-                bpm = float(beat.effects["tempo"][0])
+            bpm = beat.tempo or bpm
             t += float(beat.length()) * 60.0 / bpm
     sched.total = t
     return sched
