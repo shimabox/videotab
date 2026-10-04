@@ -122,6 +122,17 @@ def test_claude_is_confined_and_rules_are_inlined(tmp_path):
     assert text.startswith("## 3.") and "## 4." not in text
     assert "## 5." in read.rules("3", "5")
 
+def test_reader_prompt_takes_table_columns_from_index(tmp_path):
+    # ページによって線の位置が違う動画では、一覧に「弦の線」の列が増える。担当に渡す表の見出しも合わせる
+    (tmp_path / "pages").mkdir()
+    head = "| ページ | 時刻 | フレーム | 画像 | 弦の線（1〜6 弦の y） | 注意 |\n|---|---|---|---|---|---|\n"
+    rows = "| 1 | 0:00 | 1-3 | p001_a.png | 70.2, 100.3 | |\n| 2 | 0:03 | 4-6 | p002_a.png | 80.2, 110.3 | |\n"
+    (tmp_path / "pages" / "index.md").write_text("- 画像の説明\n\n" + head + rows, encoding="utf-8")
+    prompt = read.reader_prompt(tmp_path, "B", [2], first=False)
+    assert head + "| 2 | 0:03 | 4-6 | p002_a.png | 80.2, 110.3 | |" in prompt
+    assert "| 1 | 0:00" not in prompt and "| ページ | 時刻 | フレーム | 画像 | 注意 |" not in prompt
+
+
 def test_every_prompt_asks_for_reply_in_japanese(tmp_path):
     (tmp_path / "pages").mkdir()
     (tmp_path / "pages" / "index.md").write_text(

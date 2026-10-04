@@ -88,23 +88,28 @@ def plan_message(page_count: int, labels: str, groups: list[list[int]], name: st
     )
 
 
-def _index_parts(workdir: Path) -> tuple[list[str], dict[int, str]]:
-    """pages/index.md の冒頭の説明と、ページ番号ごとの表の行。"""
-    head, rows = [], {}
+def _index_parts(workdir: Path) -> tuple[list[str], dict[int, str], list[str]]:
+    """pages/index.md の冒頭の説明と、ページ番号ごとの表の行と、表の見出し（見出しと区切りの 2 行）。
+
+    表の列はページによって線の位置が違う動画で増えるので、見出しも index.md から取る。
+    """
+    head, rows, columns = [], {}, []
     for line in (workdir / "pages" / "index.md").read_text(encoding="utf-8").splitlines():
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if line.startswith("|") and cells and cells[0].isdigit():
             rows[int(cells[0])] = line
+        elif line.startswith("|") and not rows:
+            columns.append(line)
         elif line.startswith("- "):
             head.append(line)
-    return head, rows
+    return head, rows, columns or ["| ページ | 時刻 | フレーム | 画像 | 注意 |", "|---|---|---|---|---|"]
 
 
 def reader_prompt(workdir: Path, label: str, pages: list[int], first: bool) -> str:
     wd = workdir.resolve()
     yt = videotab_bin()
-    head, rows = _index_parts(workdir)
-    table = "\n".join(["| ページ | 時刻 | フレーム | 画像 | 注意 |", "|---|---|---|---|---|"] + [rows[p] for p in pages if p in rows])
+    head, rows, columns = _index_parts(workdir)
+    table = "\n".join(columns + [rows[p] for p in pages if p in rows])
     score_task = (
         f"\n3. {wd}/score.json の tempo（1 小節目のテンポ ♩=N）、time_signature、tuning（1 弦から）、capo を"
         "画面の表記に合わせて直す（title・subtitle・tab_by は変えない）。テンポの表記がなければ、ページの時刻と"
