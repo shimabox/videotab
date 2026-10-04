@@ -440,33 +440,44 @@ class App:
             else {},
         }
 
-    def file_path(self, job_id: str, rel: str) -> Path | None:
+    def file_path(self, job_id: str, rel: str) -> tuple[Path, Path] | None:
+        """/files/ で返すファイルの（作業フォルダ, 中のリンクをたどり終えたパス）。返さないものは None。
+
+        作業フォルダの中だけをたどって確かめる（外を指すリンクは、途中のフォルダも含めて返さない）。
+        """
         if not ID_PATTERN.match(job_id):
             return None
         base = (self.root / job_id).resolve()
-        target = (base / rel).resolve()
-        if base not in target.parents or target.suffix.lower() not in SERVED_SUFFIXES or not target.is_file():
+        try:
+            target = confine.guard(base / rel, root=base)
+        except (OSError, SystemExit, ValueError):  # 外を指す（confine.Outside）・調べられない・パスにできない
             return None
-        return target
+        if target == base or target.suffix.lower() not in SERVED_SUFFIXES:
+            return None
+        return base, target
 
     def read_file(self, job_id: str, rel: str) -> tuple[Path, bytes] | None:
         """/files/ で返すファイルの（パス, 中身）。返さないものは None。
 
-        resolve した先が作業フォルダの外なら返さない（外へのリンクは、途中のフォルダも含めて外になる）。
-        さらに、確かめた先をリンクをたどらずに開き、通常のファイルで、ほかの名前と中身を共有していない
-        （外のファイルとのハードリンクでない）ことを確かめてから、開いたものを読む。
+        作業フォルダの外を指すパスは返さない（外へのリンクは、途中のフォルダも含めて外になる）。
+        確かめたパスの親フォルダを、作業フォルダから 1 つずつリンクをたどらずに開いて足場にし、
+        そこから名前で開く（確かめたあとに途中のフォルダをリンクへ差し替えられても、外を読まない）。
+        開いたものが通常のファイルで、ほかの名前と中身を共有していない（外のファイルとのハードリンクで
+        ない）ことを確かめてから読む。
         """
         found = self._read(job_id, rel)
         return None if found is None else (found[0], found[2])
 
     def _read(self, job_id: str, rel: str, limit: int | None = None) -> tuple[Path, os.stat_result, bytes] | None:
         """read_file の中身。（パス, 開いたファイルの stat, 中身）を返す。limit を超える大きさなら None。"""
-        target = self.file_path(job_id, rel)
-        if target is None:
+        found = self.file_path(job_id, rel)
+        if found is None:
             return None
+        base, target = found
         try:
-            fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        except OSError:
+            with inside.open_dir(base, target.parent.relative_to(base), create=False) as folder:
+                fd = os.open(target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder.fd)
+        except (OSError, SystemExit):  # 無い・リンクへ差し替えられた（confine.Outside）など
             return None
         with os.fdopen(fd, "rb") as f:
             st = os.fstat(f.fileno())

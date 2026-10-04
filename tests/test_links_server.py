@@ -74,6 +74,27 @@ def test_files_serves_plain_files_inside_only(files):
     assert get(f"{base}/files/{JOB}/{JOB}.html")[0] == 404 and app.page(JOB) is None
 
 
+def test_files_does_not_follow_a_folder_swapped_after_the_check(files, tmp_path, monkeypatch):
+    # パスを確かめたあとに、途中のフォルダを外へのリンクに差し替えられても、外のファイルを返さない
+    app, base = files
+    wd = app.root / JOB
+    (wd / "pages").mkdir()
+    (wd / "pages" / "y.md").write_text("inside y")
+    assert app.read_file(JOB, "pages/y.md")[1] == b"inside y"
+    checked = server.App.file_path
+
+    def swap_after_check(self, job_id, rel):
+        found = checked(self, job_id, rel)
+        if rel == "pages/y.md" and not (wd / "pages").is_symlink():
+            (wd / "pages").rename(wd / "pages.real")
+            (wd / "pages").symlink_to(tmp_path / "outside" / "d")  # y.md（中身は outside y）がある外のフォルダ
+        return found
+
+    monkeypatch.setattr(server.App, "file_path", swap_after_check)
+    assert app.read_file(JOB, "pages/y.md") is None
+    assert get(f"{base}/files/{JOB}/pages/y.md")[0] == 404
+
+
 def test_files_are_sandboxed_and_refusals_are_not_sniffed(files):
     _, base = files
     with urllib.request.urlopen(f"{base}/files/{JOB}/notes.md") as r:
