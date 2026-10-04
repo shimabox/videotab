@@ -4,6 +4,8 @@ import numpy as np
 import pytest
 from synth import BAND, TAB_LINES, frame, video_noise, write_frames
 
+from PIL import Image, UnidentifiedImageError
+
 from videotab import cli, pages, strip
 from videotab.workdir import list_frames
 
@@ -520,3 +522,15 @@ def test_cmd_strip_writes_shifts_only_for_moving_staff(tmp_path, capsys):
     printed = capsys.readouterr().out
     assert "shifts" not in json.loads((fixed / "meta.json").read_text(encoding="utf-8"))["strip"]
     assert "動きます" not in printed and "基準" not in printed
+
+
+def test_frames_are_opened_only_as_png_or_jpeg(tmp_path):
+    # 名前が .png でも、中身が別の形式（EPS など）のファイルは開かない
+    eps = tmp_path / "0001_00m00s000.png"
+    eps.write_bytes(b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\n%%EndComments\nshowpage\n")
+    assert Image.open(eps).format == "EPS"  # 形式を限らなければ、Pillow は EPS として開く
+    with pytest.raises(UnidentifiedImageError):
+        strip.load_rgb(eps)
+    for fmt, name in (("PNG", "a.png"), ("JPEG", "b.jpg")):
+        Image.new("RGB", (4, 3), (10, 20, 30)).save(tmp_path / name, format=fmt)
+        assert strip.load_rgb(tmp_path / name).shape == (3, 4, 3)
