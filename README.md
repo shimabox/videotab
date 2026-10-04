@@ -2,9 +2,18 @@
 
 手元の動画ファイルから、画面に写るタブ譜を 1 枚の楽譜（alphaTab の HTML＋alphaTex）に書き起こします。
 
-![videotab の画面。上に動画を送るフォーム、左に曲の一覧、右に段ごとの進み具合と、書き起こしたタブ譜が並ぶ](docs/images/screen.png)
+<table>
+  <tr>
+    <th>画面</th>
+    <th>できあがった楽譜（HTML）</th>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><img src="docs/images/screen.png" alt="videotab の画面。上に動画を送るフォーム、左に曲の一覧、右に段ごとの進み具合・曲の情報・やり直しの欄と、書き起こしたタブ譜が並ぶ"></td>
+    <td width="50%" valign="top"><img src="docs/images/score.png" alt="書き起こした楽譜の HTML。五線とタブ譜の 8 小節が並び、下に再生と Guitar Pro・MIDI・alphaTex・印刷のボタンがある"></td>
+  </tr>
+</table>
 
-画面の例は、自作の練習用リフ（8 小節）のタブ譜を写した合成の動画を、取り込みから読み取り・組み立てまで videotab で通したものです。
+画面の例は、自作の練習用リフ（8 小節）のタブ譜を写した合成の動画を、取り込みから読み取り・組み立て・時刻の照合まで videotab で通したものです。右は、できあがった楽譜を単独の HTML として開いたところです。
 
 しくみは図つきで [videotab のしくみ](https://shimabox.github.io/videotab/) にまとめてあります。
 
