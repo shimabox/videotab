@@ -481,7 +481,7 @@ section > h3 { margin-top: 32px; }
   <p>AI（特に Codex）は、作業フォルダの中に「別の場所を指すファイル」を置けます。AI が動画の画像に書かれた指示にだまされてそれを置いても、videotab があなたのほかのファイルを書き換えることはありません。</p>
   <p>できあがったタブ譜のページも作業フォルダの中にあり、AI が書き換えられます。そのため画面は、保存されたページをそのまま返さず、楽譜のデータ（alphaTex）から毎回組み立てて返します。AI が作業フォルダに HTML を置いても、画面でそのスクリプトが動くことはありません。さらに、タブ譜のページを画面とは切り離して（別の出どころとして）表示します。ページに与えるのは表示・再生・ダウンロード・印刷・リンクに要る許可だけで、ページの中から曲の追加・やり直し・削除はできません。画面の中や別のタブで開いたときは、自動スクロールの選択は記憶されません。</p>
   <p>動画を受け取る口は、画面からの操作だけを受け付けます。大きさや形式は中身を読む前に確かめ、受け取った動画は本体専用の一時フォルダで確かめてから取り込みます。</p>
-  <p class="note">起動のしかたや、ほかのファイルを守るしくみの詳しい説明は <a href="safety.md">安全のしくみ（docs/safety.md）</a> にあります。</p>
+  <p class="note">起動のしかたや、ほかのファイルを守るしくみの詳しい説明は <a href="https://github.com/shimabox/videotab/blob/main/docs/safety.md">安全のしくみ（docs/safety.md）</a> にあります。</p>
 </section>
 
 <section id="result">
@@ -545,7 +545,7 @@ uv run videotab add 動画.mp4 / frames ID / strip ID / pages ID / check ID / bu
     </table>
   </div>
   <p class="note">動画・画像・楽譜は、手元の <code>work/</code> フォルダに保存されます（git の管理外なので、リポジトリには入りません）。要らなくなった曲は、画面の「この曲を消す」で作業フォルダごと消せます（元に戻せません）。</p>
-  <p class="note">詳しい使い方は <a href="../README.md">README</a> と、<a href="usage.md">画面の使い方</a>・<a href="model-settings.md">読み取りのモデルと推論の強さ</a>・<a href="commands.md">コマンド</a> にあります。</p>
+  <p class="note">詳しい使い方は <a href="https://github.com/shimabox/videotab#readme">README</a> と、<a href="https://github.com/shimabox/videotab/blob/main/docs/usage.md">画面の使い方</a>・<a href="https://github.com/shimabox/videotab/blob/main/docs/model-settings.md">読み取りのモデルと推論の強さ</a>・<a href="https://github.com/shimabox/videotab/blob/main/docs/commands.md">コマンド</a> にあります。</p>
 </section>
 
 <aside class="disclaimer" aria-labelledby="disclaimer-title">
@@ -555,7 +555,7 @@ uv run videotab add 動画.mp4 / frames ID / strip ID / pages ID / check ID / bu
     <li>動画・画像・書き起こしたタブ譜には、楽曲や元の動画・タブ譜の作り手の著作物が含まれます。</li>
     <li><b>私的な練習の範囲で使い、公開・再配布・販売をしないでください。</b></li>
     <li>読み取りは、あなたの Claude Code / Codex の利用枠を使います。強い設定ほど利用枠を多く使い、時間もかかります。</li>
-    <li>すべての項目は <a href="../README.md#免責事項">README の免責事項</a> にあります。</li>
+    <li>すべての項目は <a href="https://github.com/shimabox/videotab#免責事項">README の免責事項</a> にあります。</li>
   </ul>
 </aside>
 

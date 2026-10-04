@@ -6,7 +6,7 @@
 
 画面の例は、自作の練習用リフ（8 小節）のタブ譜を写した合成の動画を、取り込みから読み取り・組み立てまで videotab で通したものです。
 
-しくみは図つきで [videotab のしくみ](docs/index.html) にまとめてあります。
+しくみは図つきで [videotab のしくみ](https://shimabox.github.io/videotab/) にまとめてあります。
 
 ## できること
 
