@@ -2,9 +2,9 @@ import json
 
 import numpy as np
 import pytest
-from synth import BAND, TAB_LINES, frame, video_noise, write_frames
+from synth import BAND, TAB_LINES, digit_frame, frame, video_noise, write_frames
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageDraw, UnidentifiedImageError
 
 from videotab import cli, pages, strip
 from videotab.workdir import list_frames
@@ -156,6 +156,141 @@ def test_auto_threshold_sits_in_gap():
     flips = np.array([0.08, 0.09, 0.1])
     thr = pages.auto_threshold(np.concatenate([noise, flips]))
     assert 0.012 <= thr < 0.08
+
+
+def digit_setup(dark=False, scale=1):
+    return pages.Setup(
+        tuple(y * scale for y in BAND), 1 if dark else -1,
+        (60, 60, 60) if dark else (252, 252, 252),
+        [[y * scale for y in TAB_LINES]],
+    )
+
+
+@pytest.mark.parametrize("dark", [False, True])
+@pytest.mark.parametrize("scale", [1, 2])
+def test_pages_split_same_layout_digit_changes(tmp_path, dark, scale):
+    seq = [digit_frame(digit, dark=dark) for digit in "333355558888"]
+    if scale != 1:
+        seq = [np.asarray(Image.fromarray(im).resize((640 * scale, 360 * scale), Image.Resampling.NEAREST)) for im in seq]
+    write_frames(tmp_path, seq)
+    setup = digit_setup(dark, scale)
+    frames = list_frames(tmp_path)
+    det = pages.detect_pages(frames, setup)
+    # Issue #10: 帯全体の差は約 0.005 で、全体しきい値も横スクロールの下限も下回る。
+    assert 0 < det.diffs[4] < 0.008 < det.threshold
+    assert starts(det) == [1, 5, 9]
+    assert [p.pick.index for p in det.pages] == [3, 7, 11]
+    # 手動指定はこれまでと同じ意味のままにする。
+    assert starts(pages.detect_pages(frames, setup, threshold=0.02)) == [1]
+
+
+@pytest.mark.parametrize("cursor_width", [1, 2])
+def test_pages_ignore_cursor_but_keep_digit_changes(tmp_path, cursor_width):
+    seq = [
+        digit_frame(digit, cursor_x=40 + 110 * (i % 4), cursor_width=cursor_width)
+        for i, digit in enumerate("333355558888")
+    ]
+    write_frames(tmp_path, seq)
+    assert starts(pages.detect_pages(list_frames(tmp_path), digit_setup())) == [1, 5, 9]
+
+
+def test_pages_split_when_only_one_fret_digit_changes(tmp_path):
+    a = digit_frame("3")
+    b = a.copy()
+    b[270:282, 34:46] = digit_frame("5")[270:282, 34:46]
+    write_frames(tmp_path, [a] * 4 + [b] * 4)
+    det = pages.detect_pages(list_frames(tmp_path), digit_setup())
+    assert 0 < det.diffs[4] < 0.001
+    assert starts(det) == [1, 5]
+
+
+@pytest.mark.parametrize("dark", [False, True])
+def test_pages_split_thin_stroke_digit_changes(tmp_path, dark):
+    write_frames(tmp_path, [digit_frame(digit, dark=dark) for digit in "66668888"])
+    assert starts(pages.detect_pages(list_frames(tmp_path), digit_setup(dark))) == [1, 5]
+
+
+@pytest.mark.parametrize("dark", [False, True])
+def test_pages_split_digits_with_gaps_in_dark_staff_lines(tmp_path, dark):
+    seq = []
+    for digit in "33335555":
+        orig = digit_frame(digit, dark=dark)
+        im = orig.copy()
+        for y in TAB_LINES:
+            im[y, 10:-10] = 235 if dark else 20
+        # 濃い弦線を数字の背景だけ白抜きする。弦線の各端点をカーソルの角と混同しない。
+        for x in range(40, 620, 45):
+            for y in TAB_LINES[::2]:
+                im[y - 6 : y + 6, x - 6 : x + 6] = orig[y - 6 : y + 6, x - 6 : x + 6]
+        seq.append(im)
+    write_frames(tmp_path, seq)
+    assert starts(pages.detect_pages(list_frames(tmp_path), digit_setup(dark))) == [1, 5]
+
+
+@pytest.mark.parametrize("rounded,width,height", [(False, 60, 48), (True, 60, 48), (True, 30, 32)])
+def test_pages_ignore_cursor_pauses_corners_and_small_gaps(tmp_path, rounded, width, height):
+    seq = []
+    for i in range(12):
+        base = digit_frame("3")
+        im = Image.fromarray(base)
+        draw = ImageDraw.Draw(im)
+        x = 50 + 110 * (i // 4)
+        if rounded:
+            draw.rounded_rectangle((x, 270, x + width, 270 + height), radius=8, outline=(20,) * 3)
+        else:
+            draw.rectangle((x, 270, x + width, 270 + height), outline=(20,) * 3)
+        arr = np.array(im)
+        if not rounded:
+            for y in range(275, 315, 10):
+                arr[y, [x, x + width]] = base[y, [x, x + width]]
+        seq.append(arr)
+    write_frames(tmp_path, seq)
+    assert starts(pages.detect_pages(list_frames(tmp_path), digit_setup())) == [1]
+
+
+def test_pages_ignore_scattered_ink_noise_and_note_highlights(tmp_path):
+    rng = np.random.default_rng(10)
+    base = digit_frame("3")
+    seq = []
+    for _ in range(12):
+        im = base.copy()
+        # 二値化の境界をまたぐ散在ノイズと、演奏中の数字の色替え。
+        noisy = rng.random(im[BAND[0] : BAND[1]].shape[:2]) < 0.004
+        im[BAND[0] : BAND[1]][noisy] = 180
+        ink = (im[:, :, 0] < 100) & (np.indices(im.shape[:2])[0] >= BAND[0])
+        im[ink] = (180, 20, 20)
+        seq.append(im)
+    write_frames(tmp_path, seq)
+    assert starts(pages.detect_pages(list_frames(tmp_path), digit_setup())) == [1]
+
+
+def test_pages_ignore_noise_at_ink_threshold(tmp_path):
+    rng = np.random.default_rng(20)
+    base = digit_frame("3").astype(float)
+    base[BAND[0] : BAND[1]][base[BAND[0] : BAND[1]] < 100] = 192
+    seq = [np.clip(base + rng.normal(0, 2, base.shape), 0, 255).astype(np.uint8) for _ in range(12)]
+    write_frames(tmp_path, seq)
+    assert starts(pages.detect_pages(list_frames(tmp_path), digit_setup())) == [1]
+
+
+def test_pages_keep_one_frame_digit_change_and_last_page(tmp_path):
+    write_frames(tmp_path, [digit_frame(digit) for digit in "3333588889"])
+    det = pages.detect_pages(list_frames(tmp_path), digit_setup())
+    assert starts(det) == [1, 5, 6, 10]
+    assert det.dropped == []
+
+
+@pytest.mark.parametrize("noise", [0, 0.5, 1.5])
+def test_pages_drop_crossfade_between_similar_digits(tmp_path, noise):
+    a, b = digit_frame("3"), digit_frame("5")
+    blend = np.minimum(a, b)
+    if noise:
+        rng = np.random.default_rng(4)
+        blend = np.clip(blend.astype(float) + rng.normal(0, noise, blend.shape), 0, 255).astype(np.uint8)
+    write_frames(tmp_path, [a] * 4 + [blend] + [b] * 4)
+    det = pages.detect_pages(list_frames(tmp_path), digit_setup())
+    assert starts(det) == [1, 6]
+    assert [f.index for f in det.dropped] == [5]
 
 
 # --- ページごとに段が上下に動く動画

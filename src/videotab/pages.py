@@ -5,6 +5,8 @@
   少しずつ進む変化もたまった差として拾える）。
 - 差がしきい値を超えたらページ送り。しきい値は差の分布の切れ目（対数で見ていちばん
   大きな隙間）から自動で決める。今弾いている音の色替えはインクが変わらないので差にならない。
+- 自動判定では、数字だけ変わったページも、長い直線（演奏位置の枠など）を除いた
+  局所的な差で区切る。帯全体では薄まる小さな変化を、数字ほどの範囲で比べる。
 - しきい値より小さな差でも、帯を横にずらすと差が縮むなら横スクロールとみなして区切る。
   演奏位置の枠が動いただけなら、ずらさない位置がいちばん近いので区切らない。
 - 1 枚だけの区間は、前後のページの重ね合わせ（切り替えのフェード）なら捨てる。
@@ -170,6 +172,41 @@ def auto_threshold(diffs: np.ndarray) -> float:
     return min(max(thr, 0.012), 0.06)
 
 
+def _long_lines(ink: np.ndarray, length: int, changed: np.ndarray) -> np.ndarray:
+    """長い横線・縦線とその端の丸み。1px の欠けを許し、短い数字の字画は残す。"""
+    lines = np.zeros_like(ink)
+    for mask, delta, out in ((ink, changed, lines), (ink.T, changed.T, lines.T)):
+        joined = mask.copy()
+        joined[:, 1:-1] |= mask[:, :-2] & mask[:, 2:]
+        edges = np.diff(np.pad(joined, ((0, 0), (1, 1))).astype(np.int8), axis=1)
+        rows, starts = np.nonzero(edges == 1)
+        _, ends = np.nonzero(edges == -1)
+        radius = length // 2
+        for row, start, end in zip(rows, starts, ends):
+            if end - start >= length:
+                out[row, start:end] = True
+                # 端点の近くも除き、枠の角丸を数字の変化と取り違えない。
+                # 線全体は太らせない（濃い弦線の周りの数字まで消してしまうため）。
+                # 変わっていない弦線の端は広げない。数字の白抜きで切れた弦線の端まで
+                # 広げると、肝心の数字の変化が全部隠れてしまう。
+                if delta[row, start:end].sum() >= (end - start) / 2:
+                    for x in (start, end - 1):
+                        out[max(0, row - radius) : row + radius + 1, max(0, x - radius) : x + radius + 1] = True
+    return lines
+
+
+def _local_diff(a: np.ndarray, b: np.ndarray, spacing: float) -> float:
+    """数字ほどの窓で見た差の最大割合。長い枠線は除き、散在ノイズの影響は小さくする。"""
+    # どちらかに長い直線がある位置は両方から除く。枠と数字が重なった交点も差にならない。
+    changed = a != b
+    changed &= ~_long_lines(a | b, max(8, round(2 * spacing)), changed)
+    side = min(max(3, round(1.5 * spacing)), *changed.shape)
+    summed = np.pad(changed.astype(np.int32).cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+    counts = summed[side:, side:] - summed[:-side, side:] - summed[side:, :-side] + summed[:-side, :-side]
+    # 小さい画像でも、1〜2 画素だけの変化では区切らない。
+    return float(counts.max()) / max(side * side, 100)
+
+
 def _grow(mask: np.ndarray) -> np.ndarray:
     """上下左右に 1px 広げる（圧縮による 1px のずれを許すため）。"""
     grown = mask.copy()
@@ -195,7 +232,16 @@ def _is_blend(ink: np.ndarray, before: np.ndarray, after: np.ndarray) -> bool:
     only_before = before & ~_grow(after)
     only_after = after & ~_grow(before)
     if only_before.sum() == 0 or only_after.sum() == 0:
-        return False
+        # 数字の細いストロークだけが違うと、1px 広げた時点で固有のインクが消える。
+        # この場合だけ、元の位置で双方の字画をほぼ全部含むかを見る。
+        # 和集合との完全一致は、圧縮ノイズによる境界の数画素の違いまで弾いてしまう。
+        only_before, only_after = before & ~after, after & ~before
+        if not only_before.any() or not only_after.any():
+            return False
+        return bool(
+            (only_before & ink).sum() / only_before.sum() >= 0.95
+            and (only_after & ink).sum() / only_after.sum() >= 0.95
+        )
     grown_ink = _grow(ink)
     kept_before = (only_before & grown_ink).sum() / only_before.sum()
     kept_after = (only_after & grown_ink).sum() / only_after.sum()
@@ -228,6 +274,15 @@ def detect_pages(frames: list[Frame], setup: Setup, threshold: float | None = No
     # ずらして比べるのは、ふだんの揺れよりはっきり大きい差のときだけ
     floor = max(0.008, 2 * float(np.median(tab_diffs))) if len(tab_diffs) else 0.008
 
+    # 手でしきい値を指定した場合は従来どおり、全体差分と横スクロールだけで決める。
+    spacing = setup.spacing * min(1.0, COMPARE_WIDTH / gray.shape[1]) if frames else 1.0
+    local_noise = [
+        _local_diff(inks[i - 1], inks[i], spacing) if diffs[i] else 0.0
+        for i in range(1, len(frames))
+        if tab[i - 1] and tab[i]
+    ] if threshold is None else []
+    local_thr = max(0.03, 3 * float(np.median(local_noise))) if local_noise else 0.03
+
     # タブが見えているフレームを、今のページの最初のフレームとの差で区切る。
     # 線の位置が変わる所（strip の shifts の区間の境目）では、差が小さくても必ず区切る
     segments: list[list[int]] = []
@@ -237,7 +292,11 @@ def detect_pages(frames: list[Frame], setup: Setup, threshold: float | None = No
         if segments and segments[-1][-1] == i - 1 and dys[i] == dys[segments[-1][0]]:
             d = ink_diff(inks[i], inks[segments[-1][0]])
             scrolled = floor < d <= thr and shifted_diff(inks[segments[-1][-1]], inks[i]) < diffs[i]
-            if d <= thr and not scrolled:
+            local = (
+                threshold is None and 0 < d <= thr
+                and _local_diff(inks[segments[-1][0]], inks[i], spacing) >= local_thr
+            )
+            if d <= thr and not scrolled and not local:
                 segments[-1].append(i)
                 continue
         segments.append([i])

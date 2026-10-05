@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from videotab.workdir import frame_name
 
@@ -92,3 +92,24 @@ def write_frames(workdir: Path, frames: list[np.ndarray], step: float = 1.0) -> 
     out.mkdir(parents=True, exist_ok=True)
     for i, a in enumerate(frames, start=1):
         Image.fromarray(a).save(out / frame_name(i, (i - 1) * step))
+
+
+def digit_frame(digit: str, *, dark: bool = False, cursor_x: int | None = None, cursor_width: int = 1) -> np.ndarray:
+    """配置が同じでフレットの数字だけが違うページ。1px の細い字画も含む実フォントを使う。"""
+    bg, ink = (60, 235) if dark else (252, 20)
+    arr = frame(0, dark=dark, staff=False)
+    arr[BAND[0] : BAND[1]] = bg
+    for y in TAB_LINES:
+        arr[y, 10:-10] = bg + (14 if dark else -14)
+    im = Image.fromarray(arr)
+    draw = ImageDraw.Draw(im)
+    font = ImageFont.load_default(size=11)
+    for x in range(40, 620, 45):
+        for y in TAB_LINES[::2]:
+            draw.text((x, y), digit, fill=(ink,) * 3, font=font, anchor="mm")
+    if cursor_x is not None:
+        draw.rectangle(
+            (cursor_x, BAND[0] + 5, cursor_x + 60, BAND[1] - 5),
+            outline=(ink,) * 3, width=cursor_width,
+        )
+    return np.asarray(im)
