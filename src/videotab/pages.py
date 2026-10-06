@@ -5,6 +5,8 @@
   少しずつ進む変化もたまった差として拾える）。
 - 差がしきい値を超えたらページ送り。しきい値は差の分布の切れ目（対数で見ていちばん
   大きな隙間）から自動で決める。今弾いている音の色替えはインクが変わらないので差にならない。
+- 自動判定では、数字だけ変わったページも、長い直線（演奏位置の枠など）を除いた
+  局所的な差で区切る。帯全体では薄まる小さな変化を、数字ほどの範囲で比べる。
 - しきい値より小さな差でも、帯を横にずらすと差が縮むなら横スクロールとみなして区切る。
   演奏位置の枠が動いただけなら、ずらさない位置がいちばん近いので区切らない。
 - 1 枚だけの区間は、前後のページの重ね合わせ（切り替えのフェード）なら捨てる。
@@ -25,7 +27,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from videotab import confine, inside
-from videotab.strip import line_offset, load_rgb, to_gray
+from videotab.strip import line_offset, load_rgb, sample_frames, to_gray
 from videotab.workdir import Frame, fmt_time, json_text
 
 INK_DIFF = 60.0  # 地の明るさからこれだけ離れた画素をインクとみなす
@@ -94,13 +96,82 @@ class Page:
 COMPARE_WIDTH = 640  # 比べるときは帯をこの幅に縮める（解像度によらず同じしきい値で見る）
 
 
-def band_gray(frame: Frame, setup: Setup) -> np.ndarray:
+def band_rgb(frame: Frame, setup: Setup) -> np.ndarray:
     y0, y1 = setup.band
-    return to_gray(load_rgb(frame.path))[y0:y1]
+    return load_rgb(frame.path)[y0:y1]
 
 
-def ink_map(gray: np.ndarray, setup: Setup) -> np.ndarray:
+def _nearby_max(values: np.ndarray, radius: int) -> np.ndarray:
+    """数字の範囲の最大値。横・縦を別々に調べ、大きな窓の配列は作らない。"""
+    h, w = values.shape
+    horizontal = np.zeros_like(values)
+    padded = np.pad(values, ((0, 0), (radius, radius)))
+    for x in range(2 * radius + 1):
+        np.maximum(horizontal, padded[:, x : x + w], out=horizontal)
+    result = np.zeros_like(values)
+    padded = np.pad(horizontal, ((radius, radius), (0, 0)))
+    for y in range(2 * radius + 1):
+        np.maximum(result, padded[y : y + h], out=result)
+    return result
+
+
+def _neutral_foreground(rgb: np.ndarray, gray: np.ndarray, setup: Setup, dy: float = 0) -> float | None:
+    # 帯の端に残る演奏映像や見出しを、数字の濃さの基準に混ぜない。
+    lo = max(0, math.floor(min(st[0] for st in setup.staves) + dy - setup.band[0] - setup.spacing))
+    hi = math.ceil(max(st[-1] for st in setup.staves) + dy - setup.band[0] + setup.spacing + 1)
+    rgb, gray = rgb[lo:hi], gray[lo:hi]
+    contrast = np.abs(gray - setup.bg_gray)
+    neutral = (np.ptp(rgb, axis=2) <= 20) & (contrast > INK_DIFF)
+    return float(np.percentile(contrast[neutral], 95)) if neutral.any() else None
+
+
+def _find_foreground(frames: list[Frame], setup: Setup) -> float:
+    """間引いた画面の通常色の字画から、動画内で共通の濃さを決める。"""
+    reference = None
+    for frame in sample_frames(frames):
+        rgb = band_rgb(frame, setup)
+        gray = to_gray(rgb)
+        dy = setup.dy(frame.index)
+        if has_tab(gray, setup, dy=dy):
+            foreground = _neutral_foreground(rgb, gray, setup, dy)
+            if foreground is not None:
+                # 先頭のフェードや、被覆率の低い字画だけの画面で基準が下がるのを避ける。
+                reference = foreground if reference is None else max(reference, foreground)
+    if reference is not None:
+        return reference
+    return 255 - setup.bg_gray if setup.polarity > 0 else setup.bg_gray
+
+
+def _colored_ink(rgb: np.ndarray, gray: np.ndarray, setup: Setup, foreground: float | None) -> np.ndarray:
+    """色付きの数字を、通常の字画と同じ濃さで二値化する。"""
+    delta = rgb - np.asarray(setup.background, dtype=np.float32)
+    chroma = np.ptp(delta, axis=2)
+    colored = chroma > 20  # 圧縮ノイズによる小さな色差は使わない
+    result = np.zeros_like(gray, dtype=bool)
+    if not colored.any():
+        return result
+    if foreground is None:
+        foreground = _neutral_foreground(rgb, gray, setup)
+        if foreground is None:
+            foreground = 255 - setup.bg_gray if setup.polarity > 0 else setup.bg_gray
+    dominant = np.argmax(delta, axis=2)
+    for channel in range(3):
+        selected = colored & (dominant == channel)
+        if not selected.any():
+            continue
+        peak = _nearby_max(np.where(selected, chroma, 0), max(2, round(1.5 * setup.spacing)))
+        # 色の強さをその数字の最大値で割り、アンチエイリアスの被覆率を戻す。
+        # 固定の色差だけで切ると、色替えのたびに文字の縁が増減してしまう。
+        result |= selected & (peak > INK_DIFF) & (chroma * foreground / np.maximum(peak, 1) > INK_DIFF)
+    return result
+
+
+def ink_map(
+    gray: np.ndarray, setup: Setup, *, rgb: np.ndarray | None = None, foreground: float | None = None,
+) -> np.ndarray:
     ink = np.abs(gray - setup.bg_gray) > INK_DIFF
+    if rgb is not None:
+        ink |= _colored_ink(rgb, gray, setup, foreground)
     h, w = ink.shape
     if w <= COMPARE_WIDTH:
         return ink
@@ -170,6 +241,41 @@ def auto_threshold(diffs: np.ndarray) -> float:
     return min(max(thr, 0.012), 0.06)
 
 
+def _long_lines(ink: np.ndarray, length: int, changed: np.ndarray) -> np.ndarray:
+    """長い横線・縦線とその端の丸み。1px の欠けを許し、短い数字の字画は残す。"""
+    lines = np.zeros_like(ink)
+    for mask, delta, out in ((ink, changed, lines), (ink.T, changed.T, lines.T)):
+        joined = mask.copy()
+        joined[:, 1:-1] |= mask[:, :-2] & mask[:, 2:]
+        edges = np.diff(np.pad(joined, ((0, 0), (1, 1))).astype(np.int8), axis=1)
+        rows, starts = np.nonzero(edges == 1)
+        _, ends = np.nonzero(edges == -1)
+        radius = length // 2
+        for row, start, end in zip(rows, starts, ends):
+            if end - start >= length:
+                out[row, start:end] = True
+                # 端点の近くも除き、枠の角丸を数字の変化と取り違えない。
+                # 線全体は太らせない（濃い弦線の周りの数字まで消してしまうため）。
+                # 変わっていない弦線の端は広げない。数字の白抜きで切れた弦線の端まで
+                # 広げると、肝心の数字の変化が全部隠れてしまう。
+                if delta[row, start:end].sum() >= (end - start) / 2:
+                    for x in (start, end - 1):
+                        out[max(0, row - radius) : row + radius + 1, max(0, x - radius) : x + radius + 1] = True
+    return lines
+
+
+def _local_diff(a: np.ndarray, b: np.ndarray, spacing: float) -> float:
+    """数字ほどの窓で見た差の最大割合。長い枠線は除き、散在ノイズの影響は小さくする。"""
+    # どちらかに長い直線がある位置は両方から除く。枠と数字が重なった交点も差にならない。
+    changed = a != b
+    changed &= ~_long_lines(a | b, max(8, round(2 * spacing)), changed)
+    side = min(max(3, round(1.5 * spacing)), *changed.shape)
+    summed = np.pad(changed.astype(np.int32).cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+    counts = summed[side:, side:] - summed[:-side, side:] - summed[side:, :-side] + summed[:-side, :-side]
+    # 小さい画像でも、1〜2 画素だけの変化では区切らない。
+    return float(counts.max()) / max(side * side, 100)
+
+
 def _grow(mask: np.ndarray) -> np.ndarray:
     """上下左右に 1px 広げる（圧縮による 1px のずれを許すため）。"""
     grown = mask.copy()
@@ -202,6 +308,32 @@ def _is_blend(ink: np.ndarray, before: np.ndarray, after: np.ndarray) -> bool:
     return kept_before >= 0.5 and kept_after >= 0.5
 
 
+def _small_rgb(rgb: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+    """インクと同じ大きさのカラー画像。元フレームの配列を保持しない。"""
+    im = Image.fromarray(rgb.astype(np.uint8)).resize((shape[1], shape[0]), Image.BOX)
+    return np.asarray(im).astype(np.float32)
+
+
+def _is_rgb_blend(middle: np.ndarray, before: np.ndarray, after: np.ndarray, polarity: int) -> bool:
+    """前後の加重平均か、双方の字画を重ねたフレームか。二値化前の濃さで区別する。"""
+    changed = np.max(np.maximum(np.abs(after - before), np.abs(middle - before)), axis=2) > 8
+    if not changed.any():
+        return False
+    direction = (after - before)[changed]
+    energy = float(np.sum(direction * direction))
+    if energy == 0:
+        return False
+    weight = float(np.sum((middle - before)[changed] * direction)) / energy
+    if not 0.05 <= weight <= 0.95:
+        return False
+    union = np.maximum(before, after) if polarity > 0 else np.minimum(before, after)
+    for predicted in (before + weight * (after - before), union):
+        error = np.max(np.abs(middle - predicted), axis=2)[changed]
+        if float(np.mean(error)) <= 3 and float(np.mean(error > 8)) <= 0.05:
+            return True
+    return False
+
+
 @dataclass
 class Detection:
     pages: list[Page]
@@ -213,36 +345,71 @@ class Detection:
 
 def detect_pages(frames: list[Frame], setup: Setup, threshold: float | None = None) -> Detection:
     dys = [setup.dy(f.index) for f in frames]
+    # 色替えで通常色の数字が消えても、二値化の基準を変えない。
+    foreground = _find_foreground(frames, setup) if threshold is None else None
     # 画像はフレームごとに読んで、比べるのに要る小さいインクの地図だけを残す
-    # （全フレームのグレー画像を持つと、長い高解像度の動画でメモリが足りなくなる）
+    # （全フレームのカラー画像を持つと、長い高解像度の動画でメモリが足りなくなる）
     tab: list[bool] = []
     inks: list[np.ndarray] = []
-    for f, d in zip(frames, dys):
-        gray = band_gray(f, setup)
+    diffs = [0.0]
+    recent: list[np.ndarray] = []  # フェード照合用に、縮めた前後 3 枚だけを持つ
+    fades: set[int] = set()
+    for i, (f, d) in enumerate(zip(frames, dys)):
+        rgb = band_rgb(f, setup)
+        gray = to_gray(rgb)
         tab.append(has_tab(gray, setup, dy=d))
-        inks.append(ink_map(gray, setup))
+        # 手動のしきい値は、従来の明るさによるインク判定を維持する。
+        inks.append(ink_map(gray, setup, rgb=rgb if threshold is None else None, foreground=foreground))
+        if i:
+            diffs.append(ink_diff(inks[-1], inks[-2]))
+        if threshold is None:
+            recent.append(_small_rgb(rgb, inks[-1].shape))
+            if (
+                i >= 2 and all(tab[-3:]) and dys[i - 2] == dys[i - 1] == d
+                and (diffs[i - 1] or diffs[i])
+                and _is_rgb_blend(recent[1], recent[0], recent[2], setup.polarity)
+            ):
+                fades.add(i - 1)
+            if len(recent) == 3:
+                recent.pop(0)
+        del rgb
 
-    diffs = [0.0] + [ink_diff(inks[i], inks[i - 1]) for i in range(1, len(frames))]
     tab_diffs = np.array([d for i, d in enumerate(diffs) if i and tab[i] and tab[i - 1]])
     thr = threshold if threshold is not None else auto_threshold(tab_diffs)
     # ずらして比べるのは、ふだんの揺れよりはっきり大きい差のときだけ
     floor = max(0.008, 2 * float(np.median(tab_diffs))) if len(tab_diffs) else 0.008
 
+    # 手でしきい値を指定した場合は従来どおり、全体差分と横スクロールだけで決める。
+    spacing = setup.spacing * min(1.0, COMPARE_WIDTH / gray.shape[1]) if frames else 1.0
+    local_noise = [
+        _local_diff(inks[i - 1], inks[i], spacing) if diffs[i] else 0.0
+        for i in range(1, len(frames))
+        if tab[i - 1] and tab[i]
+    ] if threshold is None else []
+    local_thr = max(0.03, 3 * float(np.median(local_noise))) if local_noise else 0.03
+
     # タブが見えているフレームを、今のページの最初のフレームとの差で区切る。
     # 線の位置が変わる所（strip の shifts の区間の境目）では、差が小さくても必ず区切る
     segments: list[list[int]] = []
     for i in range(len(frames)):
-        if not tab[i]:
+        if not tab[i] or i in fades:
             continue
-        if segments and segments[-1][-1] == i - 1 and dys[i] == dys[segments[-1][0]]:
+        if (
+            segments and dys[i] == dys[segments[-1][0]]
+            and all(j in fades for j in range(segments[-1][-1] + 1, i))
+        ):
             d = ink_diff(inks[i], inks[segments[-1][0]])
             scrolled = floor < d <= thr and shifted_diff(inks[segments[-1][-1]], inks[i]) < diffs[i]
-            if d <= thr and not scrolled:
+            local = (
+                threshold is None and 0 < d <= thr
+                and _local_diff(inks[segments[-1][0]], inks[i], spacing) >= local_thr
+            )
+            if d <= thr and not scrolled and not local:
                 segments[-1].append(i)
                 continue
         segments.append([i])
 
-    kept, dropped = [], []
+    kept, dropped = [], [frames[i] for i in sorted(fades)]
     for k, seg in enumerate(segments):
         if len(seg) == 1 and 0 < k < len(segments) - 1:
             before, after = inks[segments[k - 1][-1]], inks[segments[k + 1][0]]
@@ -255,7 +422,7 @@ def detect_pages(frames: list[Frame], setup: Setup, threshold: float | None = No
         Page(n, [frames[i] for i in seg], frames[seg[len(seg) // 2]]) for n, seg in enumerate(kept, start=1)
     ]
     no_tab = [f for f, t in zip(frames, tab) if not t]
-    return Detection(pages, thr, no_tab, dropped, diffs)
+    return Detection(pages, thr, no_tab, sorted(dropped, key=lambda f: f.index), diffs)
 
 
 # --- 拡大画像

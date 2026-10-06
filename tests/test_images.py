@@ -2,9 +2,9 @@ import json
 
 import numpy as np
 import pytest
-from synth import BAND, TAB_LINES, frame, video_noise, write_frames
+from synth import BAND, TAB_LINES, digit_frame, frame, video_noise, write_frames
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageDraw, UnidentifiedImageError
 
 from videotab import cli, pages, strip
 from videotab.workdir import list_frames
@@ -70,16 +70,16 @@ def test_pages_do_not_keep_every_frame_image(tmp_path, monkeypatch):
     frames, _, setup = detect_setup(tmp_path)
     alive = []
     held = []
-    original = pages.band_gray
+    original = pages.band_rgb
 
     def tracked(frame, setup):
         gc.collect()
         held.append(sum(r() is not None for r in alive))
-        gray = original(frame, setup)
-        alive.append(weakref.ref(gray.base if gray.base is not None else gray))
-        return gray
+        rgb = original(frame, setup)
+        alive.append(weakref.ref(rgb.base if rgb.base is not None else rgb))
+        return rgb
 
-    monkeypatch.setattr(pages, "band_gray", tracked)
+    monkeypatch.setattr(pages, "band_rgb", tracked)
     det = pages.detect_pages(frames, setup)
     assert starts(det) == [1, 6]
     assert max(held) <= 1  # 次のフレームを読む時点で残っているのは、直前の 1 枚まで
@@ -156,6 +156,241 @@ def test_auto_threshold_sits_in_gap():
     flips = np.array([0.08, 0.09, 0.1])
     thr = pages.auto_threshold(np.concatenate([noise, flips]))
     assert 0.012 <= thr < 0.08
+
+
+def digit_setup(dark=False, scale=1):
+    return pages.Setup(
+        tuple(y * scale for y in BAND), 1 if dark else -1,
+        (60, 60, 60) if dark else (252, 252, 252),
+        [[y * scale for y in TAB_LINES]],
+    )
+
+
+@pytest.mark.parametrize("dark", [False, True])
+@pytest.mark.parametrize("scale", [1, 2])
+def test_pages_split_same_layout_digit_changes(tmp_path, dark, scale):
+    seq = [digit_frame(digit, dark=dark) for digit in "333355558888"]
+    if scale != 1:
+        seq = [np.asarray(Image.fromarray(im).resize((640 * scale, 360 * scale), Image.Resampling.NEAREST)) for im in seq]
+    write_frames(tmp_path, seq)
+    setup = digit_setup(dark, scale)
+    frames = list_frames(tmp_path)
+    det = pages.detect_pages(frames, setup)
+    # Issue #10: 帯全体の差は約 0.005 で、全体しきい値も横スクロールの下限も下回る。
+    assert 0 < det.diffs[4] < 0.008 < det.threshold
+    assert starts(det) == [1, 5, 9]
+    assert [p.pick.index for p in det.pages] == [3, 7, 11]
+    # 手動指定はこれまでと同じ意味のままにする。
+    assert starts(pages.detect_pages(frames, setup, threshold=0.02)) == [1]
+
+
+@pytest.mark.parametrize("cursor_width", [1, 2])
+def test_pages_ignore_cursor_but_keep_digit_changes(tmp_path, cursor_width):
+    seq = [
+        digit_frame(digit, cursor_x=40 + 110 * (i % 4), cursor_width=cursor_width)
+        for i, digit in enumerate("333355558888")
+    ]
+    write_frames(tmp_path, seq)
+    assert starts(pages.detect_pages(list_frames(tmp_path), digit_setup())) == [1, 5, 9]
+
+
+def test_pages_split_when_only_one_fret_digit_changes(tmp_path):
+    a = digit_frame("3")
+    b = a.copy()
+    b[270:282, 34:46] = digit_frame("5")[270:282, 34:46]
+    write_frames(tmp_path, [a] * 4 + [b] * 4)
+    det = pages.detect_pages(list_frames(tmp_path), digit_setup())
+    assert 0 < det.diffs[4] < 0.001
+    assert starts(det) == [1, 5]
+
+
+@pytest.mark.parametrize("dark", [False, True])
+def test_pages_split_thin_stroke_digit_changes(tmp_path, dark):
+    write_frames(tmp_path, [digit_frame(digit, dark=dark) for digit in "66668888"])
+    assert starts(pages.detect_pages(list_frames(tmp_path), digit_setup(dark))) == [1, 5]
+
+
+@pytest.mark.parametrize("dark", [False, True])
+def test_pages_split_digits_with_gaps_in_dark_staff_lines(tmp_path, dark):
+    seq = []
+    for digit in "33335555":
+        orig = digit_frame(digit, dark=dark)
+        im = orig.copy()
+        for y in TAB_LINES:
+            im[y, 10:-10] = 235 if dark else 20
+        # 濃い弦線を数字の背景だけ白抜きする。弦線の各端点をカーソルの角と混同しない。
+        for x in range(40, 620, 45):
+            for y in TAB_LINES[::2]:
+                im[y - 6 : y + 6, x - 6 : x + 6] = orig[y - 6 : y + 6, x - 6 : x + 6]
+        seq.append(im)
+    write_frames(tmp_path, seq)
+    assert starts(pages.detect_pages(list_frames(tmp_path), digit_setup(dark))) == [1, 5]
+
+
+@pytest.mark.parametrize("rounded,width,height", [(False, 60, 48), (True, 60, 48), (True, 30, 32)])
+def test_pages_ignore_cursor_pauses_corners_and_small_gaps(tmp_path, rounded, width, height):
+    seq = []
+    for i in range(12):
+        base = digit_frame("3")
+        im = Image.fromarray(base)
+        draw = ImageDraw.Draw(im)
+        x = 50 + 110 * (i // 4)
+        if rounded:
+            draw.rounded_rectangle((x, 270, x + width, 270 + height), radius=8, outline=(20,) * 3)
+        else:
+            draw.rectangle((x, 270, x + width, 270 + height), outline=(20,) * 3)
+        arr = np.array(im)
+        if not rounded:
+            for y in range(275, 315, 10):
+                arr[y, [x, x + width]] = base[y, [x, x + width]]
+        seq.append(arr)
+    write_frames(tmp_path, seq)
+    assert starts(pages.detect_pages(list_frames(tmp_path), digit_setup())) == [1]
+
+
+def test_pages_ignore_scattered_ink_noise_and_note_highlights(tmp_path):
+    rng = np.random.default_rng(10)
+    base = digit_frame("3")
+    seq = []
+    for _ in range(12):
+        im = base.copy()
+        # 二値化の境界をまたぐ散在ノイズと、演奏中の数字の色替え。
+        noisy = rng.random(im[BAND[0] : BAND[1]].shape[:2]) < 0.004
+        im[BAND[0] : BAND[1]][noisy] = 180
+        ink = (im[:, :, 0] < 100) & (np.indices(im.shape[:2])[0] >= BAND[0])
+        im[ink] = (180, 20, 20)
+        seq.append(im)
+    write_frames(tmp_path, seq)
+    assert starts(pages.detect_pages(list_frames(tmp_path), digit_setup())) == [1]
+
+
+@pytest.mark.parametrize("dark", [False, True])
+@pytest.mark.parametrize("scale", [1, 2])
+@pytest.mark.parametrize("digit,color", [
+    ("3", (180, 20, 20)), ("8", (180, 20, 20)),
+    ("9", (255, 200, 0)), ("3", (255, 0, 0)),
+])
+def test_pages_ignore_single_note_highlight(tmp_path, dark, scale, digit, color):
+    base = digit_frame(digit, dark=dark)
+    highlighted = digit_frame(digit, dark=dark, highlight_color=color)
+    seq = [base] * 4 + [highlighted] * 4 + [base] * 4
+    if scale != 1:
+        seq = [np.asarray(Image.fromarray(im).resize((640 * scale, 360 * scale), Image.Resampling.NEAREST)) for im in seq]
+    write_frames(tmp_path, seq)
+    frames, _, setup = detect_setup(tmp_path)
+    det = pages.detect_pages(frames, setup)
+    assert starts(det) == [1]
+    assert det.no_tab == []
+    assert det.dropped == []
+
+
+@pytest.mark.parametrize("dark", [False, True])
+@pytest.mark.parametrize("starts_colored", [False, True])
+@pytest.mark.parametrize("scale", [1, 2])
+def test_pages_ignore_highlight_when_no_other_digits_remain(tmp_path, dark, starts_colored, scale):
+    normal = digit_frame("3", dark=dark, sparse=True)
+    colored = digit_frame("3", dark=dark, sparse=True, highlight_color=(180, 20, 20))
+    a, b = (colored, normal) if starts_colored else (normal, colored)
+    seq = [a] * 4 + [b] * 4 + [a] * 4
+    if scale != 1:
+        seq = [np.asarray(Image.fromarray(im).resize((640 * scale, 360 * scale), Image.Resampling.NEAREST)) for im in seq]
+    write_frames(tmp_path, seq)
+    frames, _, setup = detect_setup(tmp_path)
+    det = pages.detect_pages(frames, setup)
+    assert starts(det) == [1]
+    assert det.dropped == []
+
+
+@pytest.mark.parametrize("dark", [False, True])
+@pytest.mark.parametrize("scale", [1, 2])
+@pytest.mark.parametrize("first_fade", [False, True])
+def test_pages_ignore_highlight_on_later_sparse_page(tmp_path, dark, scale, first_fade):
+    a = digit_frame("3", dark=dark, sparse=True)
+    b = digit_frame("8", dark=dark, sparse=True)
+    colored_b = digit_frame("8", dark=dark, sparse=True, highlight_color=(180, 20, 20))
+    seq = [a] * 4 + [b] * 4 + [colored_b] * 4 + [b] * 4
+    if first_fade:
+        bg = 60 if dark else 252
+        seq.insert(0, ((a.astype(float) + bg) / 2).astype(np.uint8))
+    if scale != 1:
+        seq = [np.asarray(Image.fromarray(im).resize((640 * scale, 360 * scale), Image.Resampling.NEAREST)) for im in seq]
+    write_frames(tmp_path, seq)
+    frames, _, setup = detect_setup(tmp_path)
+    det = pages.detect_pages(frames, setup)
+    # 先頭の薄い字画の扱いによらず、後のページは色替え前から最後まで 1 ページにする。
+    assert det.pages[-1].frames[0].index == (6 if first_fade else 5)
+    assert det.pages[-1].frames[-1].index == len(seq)
+    if not first_fade:
+        assert starts(det) == [1, 5]
+    assert det.dropped == []
+
+
+@pytest.mark.parametrize("dark", [False, True])
+@pytest.mark.parametrize("scale", [1, 2])
+@pytest.mark.parametrize("digits", [("3", "5"), ("6", "8")])
+@pytest.mark.parametrize("color", [(180, 20, 20), (255, 200, 0)])
+def test_pages_split_single_digit_change_while_highlighted(tmp_path, dark, scale, digits, color):
+    first, second = digits
+    a = digit_frame(first, dark=dark)
+    b = a.copy()
+    b[270:282, 34:46] = digit_frame(second, dark=dark)[270:282, 34:46]
+    colored_a = digit_frame(first, dark=dark, highlight_color=color)
+    colored_b = b.copy()
+    colored_b[270:282, 34:46] = digit_frame(second, dark=dark, highlight_color=color)[270:282, 34:46]
+    seq = [colored_a] * 4 + [colored_b] * 4 + [b] * 4 + [colored_b] * 4
+    if scale != 1:
+        seq = [np.asarray(Image.fromarray(im).resize((640 * scale, 360 * scale), Image.Resampling.NEAREST)) for im in seq]
+    write_frames(tmp_path, seq)
+    det = pages.detect_pages(list_frames(tmp_path), digit_setup(dark, scale))
+    assert starts(det) == [1, 5]
+    assert det.dropped == []
+
+
+def test_pages_ignore_noise_at_ink_threshold(tmp_path):
+    rng = np.random.default_rng(20)
+    base = digit_frame("3").astype(float)
+    base[BAND[0] : BAND[1]][base[BAND[0] : BAND[1]] < 100] = 192
+    seq = [np.clip(base + rng.normal(0, 2, base.shape), 0, 255).astype(np.uint8) for _ in range(12)]
+    write_frames(tmp_path, seq)
+    assert starts(pages.detect_pages(list_frames(tmp_path), digit_setup())) == [1]
+
+
+@pytest.mark.parametrize("dark", [False, True])
+@pytest.mark.parametrize("threshold", [None, 0.001])
+def test_pages_keep_one_frame_digit_change_and_last_page(tmp_path, dark, threshold):
+    write_frames(tmp_path, [digit_frame(digit, dark=dark) for digit in "3333588889"])
+    det = pages.detect_pages(list_frames(tmp_path), digit_setup(dark), threshold=threshold)
+    assert starts(det) == [1, 5, 6, 10]
+    assert det.dropped == []
+
+
+@pytest.mark.parametrize("noise", [0, 0.5, 1.5])
+@pytest.mark.parametrize("dark", [False, True])
+def test_pages_drop_crossfade_between_similar_digits(tmp_path, noise, dark):
+    a, b = digit_frame("3", dark=dark), digit_frame("5", dark=dark)
+    blend = np.maximum(a, b) if dark else np.minimum(a, b)
+    if noise:
+        rng = np.random.default_rng(4)
+        blend = np.clip(blend.astype(float) + rng.normal(0, noise, blend.shape), 0, 255).astype(np.uint8)
+    write_frames(tmp_path, [a] * 4 + [blend] + [b] * 4)
+    det = pages.detect_pages(list_frames(tmp_path), digit_setup(dark))
+    assert starts(det) == [1, 6]
+    assert [f.index for f in det.dropped] == [5]
+
+
+@pytest.mark.parametrize("dark", [False, True])
+@pytest.mark.parametrize("weight", [0.25, 0.5, 0.75])
+@pytest.mark.parametrize("noise", [0, 1.5])
+def test_pages_drop_weighted_crossfade_between_similar_digits(tmp_path, dark, weight, noise):
+    a, b = digit_frame("3", dark=dark), digit_frame("5", dark=dark)
+    blend = a.astype(float) * (1 - weight) + b.astype(float) * weight
+    if noise:
+        blend += np.random.default_rng(4).normal(0, noise, blend.shape)
+    blend = np.clip(blend, 0, 255).astype(np.uint8)
+    write_frames(tmp_path, [a] * 4 + [blend] + [b] * 4)
+    det = pages.detect_pages(list_frames(tmp_path), digit_setup(dark))
+    assert starts(det) == [1, 6]
+    assert [f.index for f in det.dropped] == [5]
 
 
 # --- ページごとに段が上下に動く動画
