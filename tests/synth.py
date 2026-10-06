@@ -94,19 +94,31 @@ def write_frames(workdir: Path, frames: list[np.ndarray], step: float = 1.0) -> 
         Image.fromarray(a).save(out / frame_name(i, (i - 1) * step))
 
 
-def digit_frame(digit: str, *, dark: bool = False, cursor_x: int | None = None, cursor_width: int = 1) -> np.ndarray:
-    """配置が同じでフレットの数字だけが違うページ。1px の細い字画も含む実フォントを使う。"""
+def digit_frame(
+    digit: str, *, dark: bool = False, cursor_x: int | None = None, cursor_width: int = 1,
+    highlight_color: tuple[int, int, int] | None = None,
+    sparse: bool = False,
+) -> np.ndarray:
+    """配置が同じでフレットの数字だけが違うページ。1px の細い字画も含む実フォントを使う。
+
+    highlight_color は左端の 1 弦の数字だけに使う。
+    sparse=True は一面の楽譜に数字が 1 個だけ残る最後のページ。
+    """
     bg, ink = (60, 235) if dark else (252, 20)
     arr = frame(0, dark=dark, staff=False)
-    arr[BAND[0] : BAND[1]] = bg
+    if sparse:
+        arr[:] = bg
+    else:
+        arr[BAND[0] : BAND[1]] = bg
     for y in TAB_LINES:
         arr[y, 10:-10] = bg + (14 if dark else -14)
     im = Image.fromarray(arr)
     draw = ImageDraw.Draw(im)
     font = ImageFont.load_default(size=11)
-    for x in range(40, 620, 45):
-        for y in TAB_LINES[::2]:
-            draw.text((x, y), digit, fill=(ink,) * 3, font=font, anchor="mm")
+    for x in [40] if sparse else range(40, 620, 45):
+        for y in TAB_LINES[:1] if sparse else TAB_LINES[::2]:
+            color = highlight_color if highlight_color is not None and x == 40 and y == TAB_LINES[0] else (ink,) * 3
+            draw.text((x, y), digit, fill=color, font=font, anchor="mm")
     if cursor_x is not None:
         draw.rectangle(
             (cursor_x, BAND[0] + 5, cursor_x + 60, BAND[1] - 5),
