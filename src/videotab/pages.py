@@ -45,6 +45,7 @@ class Setup:
     staves: list[list[float]]  # 基準の線の位置
     # ページによって段が上下に動く動画だけ: [最初のフレーム番号, 最後のフレーム番号, dy] の並び
     shifts: list[list] = field(default_factory=list)
+    corrections: dict[int, tuple[float, float, bool, float]] = field(default_factory=dict)
 
     @classmethod
     def from_meta(cls, meta: dict, frames: list[Frame] | None = None) -> "Setup":
@@ -53,12 +54,16 @@ class Setup:
         if not s:
             raise SystemExit("帯の位置がまだ決まっていません（先に videotab strip）")
         shifts = s.get("shifts") or []
+        corrections = {row[0]: (*row[1:4], row[4] if len(row) > 4 else 1.0)
+                       for row in s.get("corrections", [])}
+        if frames and corrections and list(corrections) != [f.index for f in frames]:
+            raise SystemExit("画像とフレームごとの補正が一致しません。strip をやり直してください")
         if frames and shifts and shifts[-1][1] != frames[-1].index:
             raise SystemExit(
                 f"線の位置はフレーム {shifts[-1][1]} までの分しかありません（画像は {frames[-1].index} 枚）。"
                 "画像を作り直したときは strip をやり直してください"
             )
-        return cls(tuple(s["band"]), s["polarity"], tuple(s["background"]), s["staves"], shifts)
+        return cls(tuple(s["band"]), s["polarity"], tuple(s["background"]), s["staves"], shifts, corrections)
 
     def dy(self, index: int) -> float:
         """フレーム番号 index の線の、基準からの上下のずれ（shifts がなければ 0）。"""
@@ -68,6 +73,19 @@ class Setup:
     def bg_gray(self) -> float:
         r, g, b = self.background
         return 0.299 * r + 0.587 * g + 0.114 * b
+
+    def correct(self, rgb: np.ndarray, index: int) -> np.ndarray:
+        if not self.corrections:
+            return rgb
+        from videotab.camera import straighten
+
+        dy, slope, _, scale = self.corrections[index]
+        return straighten(rgb, slope, dy, self.background, scale)
+
+    def visible(self, index: int, gray: np.ndarray, dy: float) -> bool:
+        if self.corrections:
+            return self.corrections[index][2]
+        return has_tab(gray, self, dy=dy)
 
     @property
     def spacing(self) -> float:
@@ -98,7 +116,7 @@ COMPARE_WIDTH = 640  # 比べるときは帯をこの幅に縮める（解像度
 
 def band_rgb(frame: Frame, setup: Setup) -> np.ndarray:
     y0, y1 = setup.band
-    return load_rgb(frame.path)[y0:y1]
+    return setup.correct(load_rgb(frame.path), frame.index)[y0:y1]
 
 
 def _nearby_max(values: np.ndarray, radius: int) -> np.ndarray:
@@ -132,7 +150,7 @@ def _find_foreground(frames: list[Frame], setup: Setup) -> float:
         rgb = band_rgb(frame, setup)
         gray = to_gray(rgb)
         dy = setup.dy(frame.index)
-        if has_tab(gray, setup, dy=dy):
+        if setup.visible(frame.index, gray, dy):
             foreground = _neutral_foreground(rgb, gray, setup, dy)
             if foreground is not None:
                 # 先頭のフェードや、被覆率の低い字画だけの画面で基準が下がるのを避ける。
@@ -172,6 +190,12 @@ def ink_map(
     ink = np.abs(gray - setup.bg_gray) > INK_DIFF
     if rgb is not None:
         ink |= _colored_ink(rgb, gray, setup, foreground)
+    if setup.corrections:
+        # 補正で動く帯の縁や演奏映像をページの変化に数えず、タブとその上下の記号で比べる。
+        lo = max(0, math.floor(setup.staves[0][0] - setup.spacing - setup.band[0]))
+        hi = math.ceil(setup.staves[-1][-1] + setup.spacing - setup.band[0] + 1)
+        ink[:lo] = False
+        ink[hi:] = False
     h, w = ink.shape
     if w <= COMPARE_WIDTH:
         return ink
@@ -357,7 +381,7 @@ def detect_pages(frames: list[Frame], setup: Setup, threshold: float | None = No
     for i, (f, d) in enumerate(zip(frames, dys)):
         rgb = band_rgb(f, setup)
         gray = to_gray(rgb)
-        tab.append(has_tab(gray, setup, dy=d))
+        tab.append(setup.visible(f.index, gray, d))
         # 手動のしきい値は、従来の明るさによるインク判定を維持する。
         inks.append(ink_map(gray, setup, rgb=rgb if threshold is None else None, foreground=foreground))
         if i:
@@ -506,7 +530,7 @@ def _write_pages(workdir: Path, out: Path, folder: inside.Folder, frames, setup:
     width = load_rgb(frames[0].path).shape[1]
     lay = layout(setup, width)
     for page in det.pages:
-        rgb = load_rgb(page.pick.path)
+        rgb = setup.correct(load_rgb(page.pick.path), page.pick.index)
         for i in range(len(lay.pieces)):
             name = f"p{page.number:03d}_{piece_label(i)}.png"
             inside.write_image(folder, name, render_piece(rgb, setup, lay, i, setup.dy(page.pick.index)), notify=print)
@@ -536,6 +560,8 @@ def _write_pages(workdir: Path, out: Path, folder: inside.Folder, frames, setup:
         "no_tab_frames": [f.index for f in det.no_tab],
         "dropped_blend_frames": [f.index for f in det.dropped],
     }
+    if setup.corrections:
+        data["camera_corrected"] = True
     inside.write_text(folder, "pages.json", json_text(data), notify=print)
     inside.write_text(folder, "index.md", index_markdown(workdir, data), notify=print)
     return out
@@ -563,6 +589,8 @@ def index_markdown(workdir: Path, data: dict) -> str:
         "- 「長い」は同じページと判定された時間が長い所。切り替えの取りこぼしを疑い、元フレームも見る。",
         "",
     ]
+    if data.get("camera_corrected"):
+        rows += ["- カメラ撮影の傾きと上下の揺れを補正済み。ぼけや映り込みで数字を読み違えることがあります。可能なら画面録画の動画を使ってください。", ""]
     if moving:
         rows += ["| ページ | 時刻 | フレーム | 画像 | 弦の線（1〜6 弦の y） | 注意 |", "|---|---|---|---|---|---|"]
     else:
@@ -590,7 +618,7 @@ def zoom_frame(workdir: Path, frame: Frame, setup: Setup) -> list[Path]:
     （confine）。出力のフォルダは、閉じ込めの有無によらず、作業フォルダの外を指していれば断り、
     出力の画像がリンクなどなら通常のファイルに置き換える（inside。拡大画像は作り直せるので知らせない）。
     """
-    rgb = load_rgb(confine.guard(frame.path))
+    rgb = setup.correct(load_rgb(confine.guard(frame.path)), frame.index)
     lay = layout(setup, rgb.shape[1])
     out = confine.guard(workdir / "pages" / "zoom")  # 表示するパス（閉じ込めがあれば、たどり終えたパス）
     root = confine.root_of(workdir)

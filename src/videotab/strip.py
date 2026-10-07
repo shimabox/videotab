@@ -147,9 +147,19 @@ class StripResult:
     # そのフレームの線は staves の各 y + dy（全段共通）。動かない動画では空
     shifts: list[tuple[int, int, float]] = field(default_factory=list)
     located: set[int] = field(default_factory=set)  # 位置が動く動画だけ: 線の位置が見つかったフレームの番号
+    # カメラ撮影の補正: (フレーム番号, y の移動量, 線の傾き dy/dx, 検出できたか, 縦の倍率)。全フレーム分。
+    corrections: list[tuple[int, float, float, bool, float]] = field(default_factory=list)
 
     def dy_at(self, index: int) -> float:
+        if self.corrections:
+            return next((row[1] for row in self.corrections if row[0] == index), 0.0)
         return next((d for a, b, d in self.shifts if a <= index <= b), 0.0)
+
+    def slope_at(self, index: int) -> float:
+        return next((row[2] for row in self.corrections if row[0] == index), 0.0)
+
+    def scale_at(self, index: int) -> float:
+        return next((row[4] for row in self.corrections if row[0] == index), 1.0)
 
 
 def sample_frames(frames: list[Frame], n: int = 24) -> list[Frame]:
@@ -184,6 +194,15 @@ def detect(frames: list[Frame], n_samples: int = 24, band: tuple[int, int] | Non
         fit = _fit(strengths, height)
         if fit and (best is None or sum(s.score for s in fit[0]) > sum(s.score for s in best[1])):
             best = (polarity, *fit, strengths)
+    if (
+        best is None
+        or sum(s.score for s in best[1]) / (6 * len(best[1])) < 8
+    ):
+        from videotab import camera
+
+        corrected = camera.detect(frames, picks, rgbs, band)
+        if corrected is not None:
+            return corrected
     if best is None:
         if band:
             raise SystemExit("タブ譜の 6 本線が見つかりませんでした（帯の指定を見直してください）")
@@ -490,17 +509,25 @@ def _grow_band(
     return grow(top, -1), grow(bottom, 1) + 1
 
 
-def debug_image(rgb: np.ndarray, result: StripResult, dy: float = 0.0) -> Image.Image:
+def debug_image(rgb: np.ndarray, result: StripResult, dy: float = 0.0, slope: float = 0.0, scale: float = 1.0) -> Image.Image:
     """帯を枠で、検出した弦の線を色つきの短い印で示した確認用画像。印は基準の位置から dy だけずらす。"""
     im = Image.fromarray(rgb.astype(np.uint8))
     d = ImageDraw.Draw(im)
     y0, y1 = result.band
-    d.rectangle([0, y0, im.width - 1, y1 - 1], outline=(255, 0, 255), width=max(1, im.height // 360))
+    width = max(1, im.height // 360)
+    def at(x, y):
+        return y * scale + dy + slope * (x - (im.width - 1) / 2)
+    if result.corrections:
+        right = im.width - 1
+        d.line([(0, at(0, y0)), (right, at(right, y0)), (right, at(right, y1 - 1)),
+                (0, at(0, y1 - 1)), (0, at(0, y0))], fill=(255, 0, 255), width=width)
+    else:
+        d.rectangle([0, y0, im.width - 1, y1 - 1], outline=(255, 0, 255), width=width)
     tick = max(8, im.width // 40)
     for st in result.staves:
         for n, y in enumerate(st.lines, start=1):
-            y += dy
             color = (0, 200, 0) if n % 2 else (0, 120, 255)
-            d.line([0, y, tick, y], fill=color, width=max(1, im.height // 360))
-            d.line([im.width - tick, y, im.width, y], fill=color, width=max(1, im.height // 360))
+            d.line([0, at(0, y), tick, at(tick, y)], fill=color, width=width)
+            d.line([im.width - tick, at(im.width - tick, y), im.width - 1, at(im.width - 1, y)],
+                   fill=color, width=width)
     return im
