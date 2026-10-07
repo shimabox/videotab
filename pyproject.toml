@@ -1,6 +1,6 @@
 [project]
 name = "videotab"
-version = "0.1.1"
+version = "0.1.2"
 description = "手元の動画ファイルから、画面に写るタブ譜を alphaTab の HTML＋alphaTex に書き起こす"
 readme = "README.md"
 license = "MIT"
