@@ -94,6 +94,20 @@ def write_frames(workdir: Path, frames: list[np.ndarray], step: float = 1.0) -> 
         Image.fromarray(a).save(out / frame_name(i, (i - 1) * step))
 
 
+def camera_frame(page: int = 0, *, slope: float = 0.009, dy: float = 0, dark: bool = False,
+                 rng_seed: int = 0, staff: bool = True, scale: float = 1) -> np.ndarray:
+    """薄い線、照明のむら、傾きと上下の手ぶれがあるカメラ撮影の合成画像。"""
+    rgb = frame(page, dark=dark, line_contrast=6, rng_seed=rng_seed, staff=staff).astype(np.float32)
+    # 照明のむらを上下・左右に加える（線の局所コントラストは保つ）。
+    rgb += np.linspace(-18, 0, W)[None, :, None] + np.linspace(-12, 0, H)[:, None, None]
+    im = Image.fromarray(np.clip(rgb, 0, 255).astype(np.uint8))
+    translation = dy + TAB_LINES[0] * (1 - scale)
+    im = im.transform(im.size, Image.Transform.AFFINE,
+                      (1, 0, 0, -slope / scale, 1 / scale, (slope * (W - 1) / 2 - translation) / scale),
+                      Image.Resampling.BILINEAR, fillcolor=(100, 100, 100))
+    return np.asarray(im)
+
+
 def digit_frame(
     digit: str, *, dark: bool = False, cursor_x: int | None = None, cursor_width: int = 1,
     highlight_color: tuple[int, int, int] | None = None,

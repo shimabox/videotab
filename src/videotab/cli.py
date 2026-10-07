@@ -206,6 +206,9 @@ def _check_frames(frames, result):
     """
     from videotab import strip
 
+    if result.corrections:
+        found = [f for f in frames if f.index in result.located]
+        return strip.sample_frames(found, 3)
     if not result.shifts:
         return strip.sample_frames(frames, 3)
     segs = result.shifts
@@ -242,6 +245,8 @@ def cmd_strip(args) -> int:
     }
     if result.shifts:  # ページによって段が上下に動く動画だけ。フレームの区間ごとの基準からのずれ
         meta["strip"]["shifts"] = [[a, b, d] for a, b, d in result.shifts]
+    if result.corrections:
+        meta["strip"]["corrections"] = [list(row) for row in result.corrections]
     if args.band:
         meta["strip"]["band_given"] = True  # 通しの実行でやり直しても、手で決めた帯を使う
     save_meta(workdir, meta)
@@ -251,10 +256,14 @@ def cmd_strip(args) -> int:
     # strip/ が作業フォルダの外を指すリンクなら作り直し、リンクをたどらずに書く
     with inside.open_dir(confine.root_of(workdir), "strip", remake=True, notify=print) as folder:
         for f in picks:
-            image = strip.debug_image(strip.load_rgb(f.path), result, dy=result.dy_at(f.index))
+            image = strip.debug_image(strip.load_rgb(f.path), result, dy=result.dy_at(f.index),
+                                      slope=result.slope_at(f.index), scale=result.scale_at(f.index))
             inside.write_image(folder, f"check_{f.index:04d}.png", image, notify=print)
     kind = "白地に濃い線" if result.polarity < 0 else "暗い地に明るい線"
     print(f"帯: y={result.band[0]}〜{result.band[1]}（{kind}、地の色 {result.background}）")
+    if result.corrections:
+        print("カメラ撮影の傾き・上下の揺れ・弦の間隔の伸縮をフレームごとに補正します。")
+        print("ぼけや映り込みで数字を読み違えることがあります。可能なら画面録画の動画を使ってください。")
     if result.shifts:
         top = result.staves[0].lines[0]
         ds = [d for _, _, d in result.shifts]
