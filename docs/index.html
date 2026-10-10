@@ -232,7 +232,7 @@ section > h3 { margin-top: 32px; }
     <div class="kicker">videotab</div>
     <h1>動画ファイルを渡すと、画面の<span>タブ譜</span>が 1 枚の楽譜になる</h1>
   </div>
-  <p class="lead">「TAB 譜付き」の演奏動画は、画面に写るタブ譜が数小節ずつ流れていきます。videotab は、手元に用意した動画ファイルからそれを最初から最後まで拾い集めて、再生もダウンロードもできる 1 枚の楽譜にまとめます。画像を扱う部分は videotab 自身が受け持ちます。数字やリズムを読む部分は、あなたの Claude Code か Codex（以下「AI」）が受け持ちます。紙の楽譜（バンドスコア）の写真や PDF からも書き起こせます（下の<a href="#paper">紙の楽譜のとき</a>）。</p>
+  <p class="lead">「TAB 譜付き」の演奏動画は、画面に写るタブ譜が数小節ずつ流れていきます。videotab は、手元に用意した動画ファイルからそれを最初から最後まで拾い集めて、再生もダウンロードもできる 1 枚の楽譜にまとめます。画像を扱う部分は videotab 自身が受け持ちます。数字やリズムを読む部分は、あなたの Claude Code か Codex（どちらも、パソコンの中で作業をこなす AI。以下「AI」）が受け持ちます。紙の楽譜（バンドスコア）の写真や PDF からも書き起こせます（下の<a href="#paper">紙の楽譜のとき</a>）。</p>
 
   <div class="staff" aria-label="タブ譜の例">
     <div class="tab-label">TAB</div>
@@ -312,23 +312,23 @@ section > h3 { margin-top: 32px; }
   <div class="steps">
 
     <article class="step">
-      <div class="head"><span class="n">1・2</span><h3>取り込みと切り出し</h3><span class="who">videotab ＋ ffprobe・ffmpeg</span></div>
+      <div class="head"><span class="n">1・2</span><h3>取り込みと切り出し</h3><span class="who">videotab ＋ ffmpeg</span></div>
       <div class="body">
         <ul>
-          <li>手元の動画ファイル（.mp4 .m4v .mov .webm .mkv .avi、4 GB まで）を、画面のアップロードか <code>videotab add</code> で受け取ります。ffprobe で映像が入っていることを確かめてから、新しい作業フォルダに取り込みます。</li>
-          <li>ffmpeg で 1 秒に 1 枚の画像にします。ファイル名に番号と時刻が入ります（例 <code>0154_02m33s000.png</code>）。</li>
-          <li>ffprobe と ffmpeg は、ローカルのファイルを動画の入れ物としてだけ読みます。再生リストなどとして解釈しないので、ネットにも、ほかのファイルにも触れません。</li>
-          <li>手元の画像フォルダや、komadori で書き出した ZIP も取り込めます。</li>
-          <li>紙の楽譜の写真（PNG・JPEG）・PDF・写真の ZIP は、時刻を持たないページの画像として取り込みます（PDF は同梱の PDFium（pypdfium2）で画像にします）。</li>
+          <li>手元の動画ファイル（.mp4 .m4v .mov .webm .mkv .avi、4 GB まで）を、画面で選ぶか、コマンドの <code>videotab add</code> で受け取ります。ffmpeg（動画を画像に切り出すソフト。セットアップで入れます）で映像が入っていることを確かめてから、新しい作業フォルダ（曲ごとに画像や結果を置くフォルダ）に取り込みます。</li>
+          <li>動画から 1 秒に 1 枚ずつ静止画を切り出します。この 1 枚 1 枚を「フレーム」と呼びます。ファイル名に番号と時刻が入ります（例 <code>0154_02m33s000.png</code>）。</li>
+          <li>ffmpeg は渡された動画ファイルを読むだけで、ネットにも、ほかのファイルにも触れません。</li>
+          <li>手元の画像フォルダや、画像をまとめた ZIP も取り込めます。</li>
+          <li>紙の楽譜の写真（PNG・JPEG）・PDF・写真の ZIP は、時刻を持たないページの画像として取り込みます（PDF は、セットアップで一緒に入る部品でページごとの画像にします）。</li>
         </ul>
-        <p class="why"><b>なぜ解像度が大事か</b>　360p だとタブの数字が数ピクセルしかなく、6 と 8 を見分けにくいためです。1080p ほどの動画を使ってください。</p>
+        <p class="why"><b>なぜ画質が大事か</b>　画質の低い動画（360p など）だとタブの数字がとても小さく写り、6 と 8 を見分けにくいためです。フル HD（1080p）ほどの動画を使ってください。</p>
       </div>
     </article>
 
     <article class="step">
       <div class="head"><span class="n">3</span><h3>帯と線の検出</h3><span class="who">videotab</span></div>
       <div class="body">
-        <p>画像を 1 行ずつ見て、「上と下の両方より濃い画素」が横にどれだけ並ぶかを数えます。弦の線は横いっぱいに続くので、その行だけ値が高くなります。</p>
+        <p>画像を上から 1 行ずつ見て、「すぐ上と下の両方より濃い点」が横にどれだけ並ぶかを数えます。弦の線は横いっぱいに続くので、その行だけ値が高くなります。</p>
         <figure>
           <div class="fig">
             <svg viewBox="0 0 560 150" role="img" aria-labelledby="f1">
@@ -368,13 +368,13 @@ section > h3 { margin-top: 32px; }
     <article class="step">
       <div class="head"><span class="n">4</span><h3>ページ分け</h3><span class="who">videotab</span></div>
       <div class="body">
-        <p>帯の中の「インク」（地の色と大きく違う画素）を、今のページの最初の画像と比べます。差が大きくなったら次のページです。</p>
+        <p>帯の中の「インク」（地の色と大きく違う点。数字や線など）を、今のページの最初の画像と比べます。差が大きくなったら次のページです。</p>
         <ul>
           <li><b>ページ送り</b>: 帯全体が一気に変わるので、差がはっきり大きい。</li>
           <li><b>横スクロール</b>: 差は中くらいですが、帯を横にずらして重ねると差が縮む。これでスクロールだと分かります。</li>
           <li><b>演奏位置の枠や、今弾いている音の色替え</b>: 差は一部だけで、ずらすとかえって差が広がるので、ページとは数えません。</li>
         </ul>
-        <p>ページごとに、弦の線の間隔が約 30px になるまで拡大し、左の余白に弦の番号を書き込みます。数字がどの弦に乗っているかを取り違えないためです。</p>
+        <p>ページごとに、弦の線の間隔が一定の大きさ（画面の点で約 30 個ぶん）になるまで拡大し、左の余白に弦の番号を書き込みます。数字がどの弦に乗っているかを取り違えないためです。</p>
         <p class="why"><b>なぜ弦の番号を書き込むか</b>　手で読んでいたとき、線 1 本ずれて別の弦と読む間違いが実際に起きたからです。</p>
       </div>
     </article>
@@ -382,7 +382,7 @@ section > h3 { margin-top: 32px; }
     <article class="step ai">
       <div class="head"><span class="n">5</span><h3>読み取り</h3><span class="who">AI（Claude Code / Codex）</span></div>
       <div class="body">
-        <p>拡大画像を見て、小節ごとに「どの弦の何フレットを、どの長さで」を楽譜データ（alphaTex）に書きます。リズムは五線の音符か、タブの下の棒と連桁の本数で読みます。</p>
+        <p>拡大画像を見て、小節ごとに「どの弦の何フレットを、どの長さで」を楽譜データ（alphaTex。楽譜を文字で書き表す書き方）に書きます。リズムは五線の音符か、タブの下の棒と連桁の本数で読みます。</p>
         <div class="tex">
           <div class="sample"><b>(5.5 0.6)</b>.<em>8</em>&nbsp;&nbsp;<b>(0.6)</b>.<em>8</em>&nbsp;&nbsp;<b>(7.5 0.6)</b>.<em>8</em>&nbsp;&nbsp;…</div>
           <dl>
@@ -399,9 +399,9 @@ section > h3 { margin-top: 32px; }
       <div class="head"><span class="n">6</span><h3>タブ譜の組み立て</h3><span class="who">videotab</span></div>
       <div class="body">
         <ul>
-          <li>分けて読んだ結果をつなぎ、1 小節ずつ検査します。1 小節の長さが拍子と合うか、タイ（前の音から伸ばす印）のつながり先があるか、書き方のくせがないか。</li>
+          <li>分けて読んだ結果をつなぎ、1 小節ずつ検査します。1 小節の長さが拍子と合うか、タイ（前の音から伸ばす印）のつながり先があるか、記号の書き方が決まりどおりか。</li>
           <li>抜けた小節や、重ねて読んだ小節で答えが食い違う所があれば、先へ進まずに AI に直させます。</li>
-          <li>通れば、楽譜を描く alphaTab を埋め込んだ 1 ファイルの HTML にします。オフラインでも表示でき、再生もできます（再生の音源データだけはネットから読みます）。</li>
+          <li>通れば、ブラウザで開ける 1 つのファイル（HTML）にします。楽譜を描いて鳴らす仕組み（alphaTab）もファイルの中に入っているので、ネットにつながっていなくても表示できます。再生もできますが、再生に使う楽器の音のデータだけはネットから読み込みます。</li>
         </ul>
       </div>
     </article>
@@ -409,7 +409,7 @@ section > h3 { margin-top: 32px; }
     <article class="step">
       <div class="head"><span class="n">7</span><h3>時刻の照合</h3><span class="who">videotab</span></div>
       <div class="body">
-        <p>繰り返し記号（「7x」など）とテンポの変化を展開して、各小節が何秒目に鳴り始めるかを計算します。それを「このページが出たのは何秒目か」と比べて、ずれがないかを確かめます。</p>
+        <p>繰り返し記号（「7x」など）とテンポの変化を反映して、小節を実際の演奏順に並べ直し、各小節が何秒目に鳴り始めるかを計算します。それを「このページが出たのは何秒目か」と比べて、ずれがないかを確かめます。</p>
         <p class="why"><b>何が分かるか</b>　繰り返しの回数やテンポの読み違いは、音だけ見ても気づきにくいのですが、時刻がずれるので見つけられます。</p>
       </div>
     </article>
@@ -457,7 +457,7 @@ section > h3 { margin-top: 32px; }
     <li><b>紙か画面かの見分け</b>　画面のタブ譜はほとんどのフレームでタブが見えますが、紙をめくる動画では見えるフレームがわずかです。手元の 12 本では、画面は 24 枚中 21〜23 枚、紙は 2〜7 枚と、はっきり分かれました。境目では画面のタブ譜の側に倒し、どちらにしたかと根拠の数を段の結果欄に出します。違っていたら「やり直す」で楽譜の種類を変えられます。</li>
     <li><b>線を確かめられた段だけ補正</b>　TAB の線を何か所かで確かめられない段は、無理に補正せず、弦の番号の印も付けません。読み手は元のページで弦を確かめます。</li>
     <li><b>時刻は使わない</b>　紙をめくる時刻は演奏の時刻ではないので、テンポの推定や時刻の照合はしません。テンポの表記がなければ、再生用に仮の 120 にします。</li>
-    <li><b>撮り方で精度が変わる</b>　ぼけ・指で隠れた所・画面の外に切れた小節は、補正しても戻りません。1080p 以上で、本をしっかり開いて撮ると読みやすくなります。</li>
+    <li><b>撮り方で精度が変わる</b>　ぼけ・指で隠れた所・画面の外に切れた小節は、補正しても戻りません。フル HD（1080p）以上の画質で、本をしっかり開いて撮ると読みやすくなります。</li>
   </ul>
 </section>
 
@@ -502,7 +502,7 @@ section > h3 { margin-top: 32px; }
     </svg>
   </div>
   <p class="note">食い違いや抜けは、まとめ役の AI（つなぎ目の問題を解くために別に起動する AI）が画像を見直して解きます。決め手は、数字がどの線に乗っているか（弦の位置）と、和音として自然か（構成音・キー）です。解いた答えは最初の読み取り結果とは別に残るので、あとから見直せます。</p>
-  <p class="note">AI は最後に短い報告（書いた小節、自信のない所、曲の構成、直した小節）を日本語で返します。画面では、この報告を見出し・箇条書き・太字・コードを整えて表示します。報告の中に HTML が書かれていても、文字として出るだけで動きません。</p>
+  <p class="note">AI は最後に短い報告（書いた小節、自信のない所、曲の構成、直した小節）を日本語で返します。画面では、この報告を読みやすく整えて表示します。</p>
 </section>
 
 <section id="safety">
@@ -513,26 +513,22 @@ section > h3 { margin-top: 32px; }
     <div class="box yes">
       <h3>許していること</h3>
       <ul>
-        <li>その曲の作業フォルダ（曲ごとに画像や結果を置くフォルダ）の中のファイルを読む</li>
+        <li>その曲の作業フォルダの中のファイルを読む</li>
         <li>決まった結果のファイルにだけ書く</li>
-        <li>検査（<code>videotab check</code>）と拡大（<code>videotab zoom</code>）を実行する。この 2 つも、作業フォルダの外には触れません</li>
+        <li>videotab の検査と拡大を使う。どちらも作業フォルダの外には触れません</li>
       </ul>
     </div>
     <div class="box no">
       <h3>止めていること</h3>
       <ul>
-        <li>作業フォルダの外のファイルを読む・書く</li>
-        <li>ほかのコマンド（python、curl、git など）を実行する</li>
-        <li>あなたの普段の設定（自動で許可するモードなど）を引き継ぐ。モデルと推論の強さだけは、画面で選んだ値か、選ばなければ普段の値を使います</li>
+        <li>作業フォルダの外のファイルを書き換える</li>
+        <li>インターネットにつなぐ</li>
+        <li>作業フォルダの外のファイルを読む・ほかのプログラムを動かす（Codex では、この 2 つは止めきれません）</li>
+        <li>あなたの普段の設定を引き継ぐ。普段の設定を書き換えることもしません</li>
       </ul>
     </div>
   </div>
-  <p class="note">Claude Code では、止めていることを聞かずに拒否します（作業フォルダの中を読むだけのコマンドは、Claude Code が自分の判断で通します）。Codex では、書き込みを作業フォルダの中に限り、ネットワークと、読み取りに要らない機能（ChatGPT のコネクタ・プラグイン・web 検索など）を切りますが、ファイルを読むことやコマンドの実行までは止めきれません。Codex の sandbox が既定で書ける一時フォルダ（<code>/tmp</code>・<code>$TMPDIR</code>）も、書き込み先から外します（確かめたのは macOS で、Linux では確かめていません）。どちらも API キーは使わず、あなたが手元でログインしている Claude Code / Codex の利用枠で動きます。画面で選んだモデルと推論の強さはその曲の読み取りだけに使い、普段の設定は書き換えません。</p>
-  <h3>videotab も、あなたのほかのファイルを書き換えない</h3>
-  <p>AI（特に Codex）は、作業フォルダの中に「別の場所を指すファイル」を置けます。AI が動画の画像に書かれた指示にだまされてそれを置いても、videotab があなたのほかのファイルを書き換えることはありません。</p>
-  <p>できあがったタブ譜のページも作業フォルダの中にあり、AI が書き換えられます。そのため画面は、保存されたページをそのまま返さず、楽譜のデータ（alphaTex）から毎回組み立てて返します。AI が作業フォルダに HTML を置いても、画面でそのスクリプトが動くことはありません。さらに、タブ譜のページを画面とは切り離して（別の出どころとして）表示します。ページに与えるのは表示・再生・ダウンロード・印刷・リンクに要る許可だけで、ページの中から曲の追加・やり直し・削除はできません。画面の中や別のタブで開いたときは、自動スクロールの選択は記憶されません。</p>
-  <p>動画を受け取る口は、画面からの操作だけを受け付けます。大きさや形式は中身を読む前に確かめ、受け取った動画は本体専用の一時フォルダで確かめてから取り込みます。</p>
-  <p class="note">起動のしかたや、ほかのファイルを守るしくみの詳しい説明は <a href="https://github.com/shimabox/videotab/blob/main/docs/safety.md">安全のしくみ（docs/safety.md）</a> にあります。</p>
+  <p class="note">モデル（Claude Code / Codex の中で使う AI の種類）と推論の強さ（AI がどれだけ時間をかけて考えるか。強いほど丁寧になりやすいが、遅く、利用枠も多く使う）だけは、画面で選んだ値か、選ばなければ普段の値を使います。どちらの AI も、あなたがログインしている Claude Code / Codex の利用枠（契約プランで使える量）で動きます。詳しい説明は <a href="https://github.com/shimabox/videotab/blob/main/docs/safety.md">安全のしくみ（docs/safety.md）</a> にあります。</p>
 </section>
 
 <section id="result">
@@ -543,10 +539,10 @@ section > h3 { margin-top: 32px; }
     <table>
       <thead><tr><th>形式</th><th>使いみち</th></tr></thead>
       <tbody>
-        <tr><td>HTML</td><td>1 ファイルで、オフラインでも表示できる。再生・自動スクロール付き</td></tr>
+        <tr><td>HTML</td><td>ブラウザで開く 1 つのファイル。ネットにつながっていなくても表示できる。再生・自動スクロール付き</td></tr>
         <tr><td>Guitar Pro（.gp）</td><td>Guitar Pro・TuxGuitar・MuseScore などで開いて編集・練習する</td></tr>
-        <tr><td>MIDI（.mid）</td><td>DAW や練習アプリで鳴らす</td></tr>
-        <tr><td>alphaTex</td><td>videotab が楽譜を作るときのテキストのデータ</td></tr>
+        <tr><td>MIDI（.mid）</td><td>音楽制作ソフト（GarageBand など）や練習アプリで鳴らす</td></tr>
+        <tr><td>alphaTex</td><td>videotab が楽譜を作るときの、文字で書いた楽譜のデータ</td></tr>
         <tr><td>印刷 / PDF</td><td>ブラウザの印刷から紙や PDF に</td></tr>
       </tbody>
     </table>
@@ -569,7 +565,8 @@ section > h3 { margin-top: 32px; }
 <section id="use">
   <div class="kicker">使い方</div>
   <h2>画面から使う・コマンドで使う</h2>
-  <pre class="cmds"><span class="c"># 画面を開く（http://127.0.0.1:8765/ 。手元のマシンの中だけで動く）</span>
+  <p class="lead">画面を使うときも、開くまでは下のコマンド（文字で打ち込む命令）を使います。Mac の「ターミナル」というアプリで、videotab のフォルダに移ってから入力します。最初の準備（ダウンロードとセットアップ）と入力のしかたは <a href="https://github.com/shimabox/videotab#readme">README</a>（videotab の説明書きのページ）にあります。</p>
+  <pre class="cmds"><span class="c"># 画面を開く（ブラウザで http://127.0.0.1:8765/ 。あなたのパソコンの中だけで動き、ネットには公開されない）</span>
 uv run videotab serve
 
 <span class="c"># 画面を使わずに、同じ流れを通しで</span>
@@ -582,8 +579,9 @@ uv run videotab run 動画.mp4 --model opus --effort max
 uv run videotab run 楽譜.pdf
 uv run videotab run ID --part 'Guitar II'
 
-<span class="c"># 段ごとに動かすこともできる（ID は add が表示する）</span>
+<span class="c"># 段ごとに動かすこともできる（ID は、取り込んだときに表示される曲ごとの名前）</span>
 uv run videotab add 動画.mp4 / frames ID / strip ID / pages ID / check ID / build ID / verify ID</pre>
+  <p>曲ごとの作業フォルダには、次のファイルができます。ふだんは開かなくて構いません（できあがった楽譜は画面から見られます）。</p>
   <div class="table-wrap">
     <table>
       <thead><tr><th>作業フォルダ work/&lt;ID&gt;/</th><th>中身</th></tr></thead>
@@ -594,12 +592,12 @@ uv run videotab add 動画.mp4 / frames ID / strip ID / pages ID / check ID / bu
         <tr><td><code>parts/</code></td><td>AI の読み取り結果（分けて読んだまとまりごと）</td></tr>
         <tr><td><code>resolve.json</code></td><td>まとめ役の AI が解いた小節</td></tr>
         <tr><td><code>readers/</code></td><td>AI の報告と、ページごとの最初の小節の番号</td></tr>
-        <tr><td><code>job.json</code> / <code>job.log</code></td><td>段ごとの進み具合とログ</td></tr>
+        <tr><td><code>job.json</code> / <code>job.log</code></td><td>段ごとの進み具合と記録</td></tr>
         <tr><td><code>&lt;ID&gt;.html</code></td><td>できあがった楽譜</td></tr>
       </tbody>
     </table>
   </div>
-  <p class="note">動画・画像・楽譜は、手元の <code>work/</code> フォルダに保存されます（git の管理外なので、リポジトリには入りません）。要らなくなった曲は、画面の「この曲を消す」で作業フォルダごと消せます（元に戻せません）。</p>
+  <p class="note">動画・画像・楽譜は、videotab のフォルダの中の <code>work/</code> に保存されます。videotab の本体とは別に置かれ、どこかへ公開されることはありません（AI には、読み取りのときに画像を見せます）。要らなくなった曲は、画面の「この曲を消す」で作業フォルダごと消せます（元に戻せません）。</p>
   <p class="note">詳しい使い方は <a href="https://github.com/shimabox/videotab#readme">README</a> と、<a href="https://github.com/shimabox/videotab/blob/main/docs/usage.md">画面の使い方</a>・<a href="https://github.com/shimabox/videotab/blob/main/docs/paper.md">紙の楽譜から書き起こす</a>・<a href="https://github.com/shimabox/videotab/blob/main/docs/model-settings.md">読み取りのモデルと推論の強さ</a>・<a href="https://github.com/shimabox/videotab/blob/main/docs/commands.md">コマンド</a> にあります。</p>
 </section>
 
