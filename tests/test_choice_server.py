@@ -174,7 +174,7 @@ def test_old_job_json_without_choice(app_server):
 def test_list_has_agent_options_read_each_time(app_server, tmp_path, monkeypatch):
     base, root, ran, app = app_server
     got = json.loads(call(base + "/api/jobs")[1])["agent_options"]
-    assert got["claude"]["usual"] == {"model": "CLI の既定", "effort": "モデルの既定", "effort_with_model": "モデルの既定"}
+    assert got["claude"]["usual"] == {"model": "Claude Code の標準", "effort": "モデルの標準", "effort_with_model": "モデルの標準"}
     assert got["codex"]["models"] is None and got["codex"]["model_hint"] is None
 
     d = tmp_path / "claude-home"
@@ -187,7 +187,7 @@ def test_list_has_agent_options_read_each_time(app_server, tmp_path, monkeypatch
 
     (d / "settings.json").write_text("{broken", encoding="utf-8")  # 壊れていたら既定の表示
     text = call(base + "/api/jobs")[1].decode()
-    assert json.loads(text)["agent_options"]["claude"]["usual"]["model"] == "CLI の既定"
+    assert json.loads(text)["agent_options"]["claude"]["usual"]["model"] == "Claude Code の標準"
     assert "ユーザー設定" not in text
 
 

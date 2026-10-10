@@ -207,6 +207,205 @@ def test_run_refuses_non_video_with_message(tmp_path, seen_runs, monkeypatch):
     assert songs(tmp_path / "work") == [] and seen_runs == []
 
 
+# --- 楽譜の種類の記録（取り込むとき）
+
+USER_PAPER = {"mode": "paper", "by": "user"}
+
+
+def meta_of(root):
+    (job_id,) = songs(root)
+    return json.loads((root / job_id / "meta.json").read_text(encoding="utf-8"))
+
+
+def test_video_without_paper_flag_records_no_source_choice(tmp_path, fake_probe, seen_runs):
+    for n, command in enumerate(("add", "run")):
+        root = tmp_path / f"work{n}"
+        assert cli.main([command, str(video(tmp_path)), "--root", str(root)]) == 0
+        meta = meta_of(root)
+        assert "source_choice" not in meta and "paper" not in meta  # strip の段が自動で見分ける
+
+
+@pytest.mark.parametrize("command", ["add", "run"])
+@pytest.mark.parametrize("options, paper", [
+    ([], {"part": None, "strings": None}),
+    (["--strings", "4"], {"part": None, "strings": 4}),
+    (["--part", "Guitar I"], {"part": "Guitar I", "strings": 6}),
+])  # fmt: skip
+def test_paper_flag_records_that_user_chose_paper(tmp_path, fake_probe, seen_runs, command, options, paper):
+    root = tmp_path / "work"
+    assert cli.main([command, str(video(tmp_path)), "--root", str(root), "--paper", *options]) == 0
+    meta = meta_of(root)
+    assert meta["paper"] == paper and meta["source_choice"] == USER_PAPER
+    assert "strip" not in meta
+
+
+@pytest.mark.parametrize("command", ["add", "run"])
+def test_documents_are_recorded_as_paper_chosen_by_user(tmp_path, seen_runs, command):
+    from PIL import Image
+
+    photo = tmp_path / "photo.png"
+    Image.new("RGB", (40, 30), "white").save(photo)
+    root = tmp_path / "work"
+    assert cli.main([command, str(photo), "--root", str(root)]) == 0
+    meta = meta_of(root)
+    assert meta["source_kind"] == "document" and meta["source_choice"] == USER_PAPER
+    assert meta["paper"] == {"part": None, "strings": None}
+
+
+def test_paper_command_records_user_choice_only_when_song_becomes_paper(tmp_path, monkeypatch, fake_probe):
+    from videotab import paper
+
+    monkeypatch.setattr(paper, "prepare", lambda _: [])
+    root = tmp_path / "work"
+    assert cli.main(["add", str(video(tmp_path)), "--root", str(root)]) == 0
+    (job_id,) = songs(root)
+    assert cli.main(["paper", str(root / job_id), "--part", "Bass", "--strings", "4"]) == 0
+    assert (meta_of(root)["paper"], meta_of(root)["source_choice"]) == ({"part": "Bass", "strings": 4}, USER_PAPER)
+    # 自動で紙と見分けた曲のパートを決めても、見分けた記録は書き換えない
+    auto = {"mode": "paper", "by": "auto", "tab_frames": [7, 24], "located_frames": [25, 97]}
+    path = root / job_id / "meta.json"
+    path.write_text(json.dumps({**meta_of(root), "paper": {"part": None, "strings": None}, "source_choice": auto}))
+    assert cli.main(["paper", str(root / job_id), "--part", "Guitar II"]) == 0
+    assert (meta_of(root)["paper"], meta_of(root)["source_choice"]) == ({"part": "Guitar II", "strings": 6}, auto)
+    # source_choice の無い、これまでの紙の曲には足さない
+    meta = meta_of(root)
+    del meta["source_choice"]
+    path.write_text(json.dumps(meta))
+    assert cli.main(["paper", str(root / job_id), "--part", "Guitar I"]) == 0
+    assert "source_choice" not in meta_of(root)
+
+
+# --- 楽譜の種類の切り替え（取り込み済みの曲）
+
+USER_SCREEN = {"mode": "video", "by": "user"}
+AUTO_SCREEN = {"mode": "video", "by": "auto", "tab_frames": [22, 24]}
+AUTO_PAPER = {"mode": "paper", "by": "auto", "tab_frames": [7, 24], "located_frames": [25, 97]}
+
+
+def added_song(tmp_path, *options, **meta):
+    """取り込み済みで、全段が済んだ曲の作業フォルダ。meta の項目を meta.json に足す。"""
+    root = tmp_path / "work"
+    assert cli.main(["add", str(video(tmp_path)), "--root", str(root), *options]) == 0
+    (job_id,) = songs(root)
+    wd = root / job_id
+    (wd / "meta.json").write_text(json.dumps({**meta_of(root), **meta}), encoding="utf-8")
+    job = pipeline.Job.create(wd)
+    data = job.load()
+    for s in data["steps"]:
+        s["status"] = "done"
+    data["status"] = "done"
+    job.save(data)
+    return wd
+
+
+def run_song(wd, *options):
+    return cli.main(["run", wd.name, "--root", str(wd.parent), *options])
+
+
+def statuses(data):
+    return {s["name"]: s["status"] for s in data["steps"]}
+
+
+def test_paper_and_screen_flags_cannot_be_combined(tmp_path, fake_probe, seen_runs):
+    wd = added_song(tmp_path)
+    before = (wd / "meta.json").read_bytes()
+    with pytest.raises(SystemExit, match="--paper と --screen は同時に指定できません"):
+        run_song(wd, "--step", "strip", "--paper", "--screen")
+    for options in (["--part", "Guitar I"], ["--strings", "4"]):
+        with pytest.raises(SystemExit, match="--screen と一緒には指定できません"):
+            run_song(wd, "--step", "strip", "--screen", *options)
+    assert (wd / "meta.json").read_bytes() == before and seen_runs == []
+
+
+def test_screen_flag_is_refused_for_a_new_file(tmp_path, fake_probe, seen_runs):
+    with pytest.raises(SystemExit, match="--screen は既存の作業フォルダの ID"):
+        cli.main(["run", str(video(tmp_path)), "--root", str(tmp_path / "work"), "--screen"])
+    assert songs(tmp_path / "work") == [] and fake_probe == [] and seen_runs == []
+
+
+@pytest.mark.parametrize("step", [["--step", "strip"], []])
+def test_paper_flag_switches_screen_song_to_paper_and_restarts_from_strip(tmp_path, fake_probe, seen_runs, step):
+    wd = added_song(tmp_path, strip={"band": [240, 350]}, source_choice=AUTO_SCREEN)
+    (wd / "strip").mkdir()
+    (wd / "strip" / "check_0001.png").write_bytes(b"old")
+    before = (wd / "meta.json").read_bytes()
+    with pytest.raises(SystemExit, match="楽譜の種類を変えるときは --step strip からやり直してください"):
+        run_song(wd, "--step", "read", "--paper")
+    assert (wd / "meta.json").read_bytes() == before and (wd / "strip").exists() and seen_runs == []
+
+    assert run_song(wd, *step, "--paper") == 0
+    meta = meta_of(wd.parent)
+    assert meta["paper"] == {"part": None, "strings": None} and meta["source_choice"] == USER_PAPER
+    assert "strip" not in meta and not (wd / "strip").exists()
+    assert statuses(seen_runs[-1][1]) == {"add": "done", "frames": "done", "strip": "pending", "pages": "pending",
+                                          "read": "pending", "build": "pending", "verify": "pending"}  # fmt: skip
+
+
+@pytest.mark.parametrize("choice", [AUTO_PAPER, USER_PAPER, None])
+def test_screen_flag_switches_paper_song_to_screen_and_restarts_from_strip(tmp_path, fake_probe, seen_runs, choice):
+    wd = added_song(tmp_path, paper={"part": None, "strings": None}, **({"source_choice": choice} if choice else {}))
+    (wd / "paper").mkdir()
+    (wd / "paper" / "parts.json").write_text("{}")
+    assert pipeline.Job(wd).load()["source_mode"] == "paper"
+    before = (wd / "meta.json").read_bytes()
+    with pytest.raises(SystemExit, match="楽譜の種類を変えるときは --step strip からやり直してください"):
+        run_song(wd, "--step", "pages", "--screen")
+    with pytest.raises(SystemExit, match="推論の強さ"):
+        run_song(wd, "--screen", "--effort", "minimal")  # 使えない指定では、切り替える前に断る
+    assert (wd / "meta.json").read_bytes() == before and seen_runs == []
+
+    assert run_song(wd, "--screen") == 0  # --step を省いても、帯と線の検出からやり直す
+    meta = meta_of(wd.parent)
+    assert "paper" not in meta and meta["source_choice"] == USER_SCREEN
+    assert (wd / "paper" / "parts.json").exists()  # 紙の楽譜に戻したとき、洗い出しをやり直すので残してよい
+    data = seen_runs[-1][1]
+    assert "source_mode" not in data and statuses(data)["frames"] == "done"
+    assert [statuses(data)[n] for n in ("strip", "pages", "read", "build", "verify")] == ["pending"] * 5
+
+
+def test_same_kind_flag_changes_nothing(tmp_path, fake_probe, seen_runs, capsys):
+    wd = added_song(tmp_path, strip={"band": [240, 350]}, source_choice=AUTO_SCREEN)
+    before = (wd / "meta.json").read_bytes()
+    assert run_song(wd, "--screen") == 0  # すでに画面のタブ譜
+    assert "できあがっています" in capsys.readouterr().out
+    assert (wd / "meta.json").read_bytes() == before and seen_runs == []
+    assert run_song(wd, "--step", "read", "--screen") == 0  # やり直し自体は、指定の段から行う
+    assert (wd / "meta.json").read_bytes() == before
+    assert statuses(seen_runs[-1][1])["strip"] == "done" and statuses(seen_runs[-1][1])["read"] == "pending"
+
+    (wd / "meta.json").write_text(json.dumps({"id": wd.name, "paper": {"part": None, "strings": None},
+                                              "source_choice": AUTO_PAPER}), encoding="utf-8")  # fmt: skip
+    before = (wd / "meta.json").read_bytes()
+    assert run_song(wd, "--step", "strip", "--paper") == 0  # すでに紙の楽譜
+    assert (wd / "meta.json").read_bytes() == before  # 見分けた記録のまま
+
+
+def test_screen_flag_is_refused_for_documents(tmp_path, seen_runs):
+    from PIL import Image
+
+    photo = tmp_path / "photo.png"
+    Image.new("RGB", (40, 30), "white").save(photo)
+    root = tmp_path / "work"
+    assert cli.main(["add", str(photo), "--root", str(root)]) == 0
+    (job_id,) = songs(root)
+    before = (root / job_id / "meta.json").read_bytes()
+    with pytest.raises(SystemExit, match="写真・PDF・ZIP の曲は、紙の楽譜としてだけ扱えます"):
+        cli.main(["run", job_id, "--root", str(root), "--step", "strip", "--screen"])
+    assert (root / job_id / "meta.json").read_bytes() == before and seen_runs == []
+
+
+def test_screen_flag_resets_tuning_of_the_chosen_paper_part(tmp_path, fake_probe, seen_runs):
+    wd = added_song(tmp_path, paper={"part": "Bass", "strings": 4}, source_choice=USER_PAPER)
+    score = {"title": "曲", "tempo": 96, "time_signature": [3, 4], "tuning": "g2 d2 a1 e1", "capo": 2}
+    (wd / "score.json").write_text(json.dumps(score), encoding="utf-8")
+    assert run_song(wd, "--step", "strip", "--screen") == 0
+    new = json.loads((wd / "score.json").read_text(encoding="utf-8"))
+    assert new == {**score, "tuning": "e4 b3 g3 d3 a2 e2", "capo": 0}  # ベースのチューニングを持ち越さない
+    (saved,) = (wd / "history").glob("part-*/score.json")
+    assert json.loads(saved.read_text(encoding="utf-8")) == score
+    assert json.loads((saved.parent / "paper.json").read_text(encoding="utf-8")) == {"part": "Bass", "strings": 4}
+
+
 def test_step_choices_start_with_add(tmp_path, capsys):
     with pytest.raises(SystemExit):
         cli.main(["run", "x", "--step", "nope"])

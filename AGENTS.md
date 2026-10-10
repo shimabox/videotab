@@ -33,7 +33,7 @@ uv run videotab pages XXXX        # ページ分けと拡大画像
 - `XXXX` は取り込んだときに表示される ID（ファイル名の英数字と 6 桁の乱数）です。作業フォルダのパスでも指せます。
 - `add` には `--title`（題名。既定はファイル名）・`--creator`（動画の作成者）・`--source-url`（元動画のページ）を付けられます。
 
-- 画像フォルダや komadori の書き出し ZIP が手元にある場合は、`uv run videotab frames 名前 --from フォルダかZIP` で取り込めます（ファイル名 `NNNN_MMmSSsmmm.png` の時刻を使います）。
+- 画像フォルダや画像の ZIP が手元にある場合は、`uv run videotab frames 名前 --from フォルダかZIP` で取り込めます（ファイル名 `NNNN_MMmSSsmmm.png` の時刻を使います）。
 - `strip` のあとで `work/XXXX/strip/check_*.png` を開きます。桃色の枠が帯、左右の緑と青の印が 1〜6 弦の線です。ずれていたら `--band Y0 Y1` で帯のおおよその範囲を指定して、やり直します。
 - `pages` の結果は `work/XXXX/pages/index.md` にあります。ページごとに次の情報が並びます。
   - 時刻

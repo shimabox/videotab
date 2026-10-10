@@ -41,16 +41,17 @@ import json
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
-from videotab.agent_settings import AgentSettings, actual_text, claude_args, codex_args, removed_env, valid_model, validate
+from videotab.agent_settings import ENGINE_NAMES, AgentSettings, actual_text, claude_args, codex_args, removed_env, valid_model, validate
 from videotab.cancel import Cancel, Cancelled, stop
 
 ENGINES = ("claude", "codex")
@@ -129,7 +130,8 @@ def _project_root(workdir: Path) -> Path:
 
 
 def _codex_command(
-    prompt: str, workdir: Path, last_message: Path, *, settings: AgentSettings | None = None
+    prompt: str, workdir: Path, last_message: Path, *, settings: AgentSettings | None = None,
+    images: list[Path] | None = None,
 ) -> list[str]:
     # 利用者の設定を読まず、書けるのは作業フォルダの中だけ（workspace-write の範囲）に固定する。
     # workspace-write は既定で /tmp と $TMPDIR にも書けるので、exclude_* で外す（writable_roots=[] では
@@ -159,6 +161,7 @@ def _codex_command(
         "-c", "shell_environment_policy.ignore_default_excludes=false",
         "-c", f"projects={{{untrusted}}}",
         *extra,
+        *[arg for path in images or [] for arg in ("--image", str(path))],
         "--skip-git-repo-check", "--color", "never",
         "-C", str(workdir.resolve()), "-o", str(last_message.resolve()), prompt,
     ]  # fmt: skip
@@ -213,7 +216,56 @@ def _actual_model(line: str) -> str | None:
     return model if valid_model(model) else None
 
 
-def run_agent(
+@contextmanager
+def _image_snapshots(workdir: Path, images: list[Path]):
+    """添付する画像を本体専用の一時フォルダへ写す。読み手のリンクを CLI 本体にたどらせない。"""
+    from videotab import confine, inside
+    from videotab.frames import IMAGE_EXTS, MAX_IMAGE_BYTES
+
+    root = workdir.resolve()
+    with inside.stage(root.parent) as stage:
+        paths = []
+        for i, source in enumerate(images):
+            source = confine.guard(source, root=root)
+            if source.suffix.lower() not in IMAGE_EXTS:
+                raise ValueError("添付する画像は PNG・JPEG にしてください")
+            with inside.open_dir(root, source.parent.relative_to(root), create=False) as folder:
+                fd = os.open(source.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder.fd)
+                try:
+                    info = os.fstat(fd)
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > MAX_IMAGE_BYTES:
+                        raise ValueError("添付する画像が通常の画像ファイルではないか、大きすぎます")
+                    content = inside.read_up_to(fd, MAX_IMAGE_BYTES)
+                finally:
+                    os.close(fd)
+            if len(content) > MAX_IMAGE_BYTES:
+                raise ValueError("添付する画像が大きすぎます")
+            name = f"image_{i:03d}{source.suffix.lower()}"
+            inside.write_bytes(stage, name, content)
+            paths.append(stage.path / name)
+        yield paths
+
+
+def run_agent(prompt: str, *, engine: str, workdir: Path, writable: list[Path], log, label: str,
+              settings: AgentSettings | None = None, on_actual=None, cancel: Cancel | None = None,
+              images: list[Path] | None = None) -> AgentResult:
+    if engine == "codex" and images:
+        from videotab import confine
+
+        if settings is not None:
+            validate(settings, engine)
+        if cancel is not None:
+            cancel.check()
+        sources = [confine.guard(path, root=workdir.resolve()) for path in images]
+        with _image_snapshots(workdir, sources) as snapshots:
+            return _run_agent(prompt, engine=engine, workdir=workdir, writable=writable, log=log, label=label,
+                              settings=settings, on_actual=on_actual, cancel=cancel, images=snapshots,
+                              image_names=sources)
+    return _run_agent(prompt, engine=engine, workdir=workdir, writable=writable, log=log, label=label,
+                      settings=settings, on_actual=on_actual, cancel=cancel)
+
+
+def _run_agent(
     prompt: str,
     *,
     engine: str,
@@ -224,6 +276,8 @@ def run_agent(
     settings: AgentSettings | None = None,
     on_actual=None,
     cancel: Cancel | None = None,
+    images: list[Path] | None = None,
+    image_names: list[Path] | None = None,
 ) -> AgentResult:
     """エージェントを 1 回起動し、終わるまで待つ。log(文字列) に進み具合を流す。
 
@@ -235,16 +289,23 @@ def run_agent(
     if settings is not None:
         validate(settings, engine)
     if shutil.which(engine) is None:
-        raise RuntimeError(f"{engine} コマンドが見つかりません")
+        name = ENGINE_NAMES.get(engine, engine)
+        raise RuntimeError(f"{name} が見つかりません。{name} を入れてログインしたあと、videotab を起動し直してください")
     if cancel is not None:
         cancel.check()
+    if engine == "codex" and images:
+        prompt += (
+            "\n次の画像をこの最初のメッセージに画像として添付しています。順番とファイル名を照らし合わせて直接見てください。"
+            "\n画像を見るために Base64 を標準出力に出すことはしないでください。追加の確認は画像を開くツールと videotab zoom を使います。\n"
+            + "\n".join(f"画像 {i}: {path}" for i, path in enumerate(image_names or images, start=1))
+        )
     fd, name = tempfile.mkstemp(prefix="videotab-codex-", suffix=".txt")
     os.close(fd)
     last_message = Path(name)
     if engine == "claude":
         cmd = _claude_command(prompt, writable, workdir, settings=settings)
     else:
-        cmd = _codex_command(prompt, workdir, last_message, settings=settings)
+        cmd = _codex_command(prompt, workdir, last_message, settings=settings, images=images)
     start = time.monotonic()
     final = ""
     env = {**os.environ, CONFINE_ENV: str(workdir.resolve())}

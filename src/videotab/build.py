@@ -128,7 +128,7 @@ def load_score(workdir: Path) -> dict:
             "tab_by": creator,
             "tempo": None,
             "time_signature": [4, 4],
-            "tuning": DEFAULT_TUNING,
+            "tuning": "g2 d2 a1 e1" if (meta.get("paper") or {}).get("strings") == 4 else DEFAULT_TUNING,
             "capo": 0,
         }
         try:
@@ -399,4 +399,3 @@ def run_build(workdir: Path, allow_check_errors: bool = False) -> int:
     print(f"出力: {out}")
     print(f"      {workdir / f'{name}.alphatex'}")
     return 0
-

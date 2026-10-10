@@ -65,7 +65,7 @@ def run_with_choice(tmp_path, monkeypatch, engine, choice, fake=None):
 def test_read_step_passes_choice_to_every_launch(tmp_path, monkeypatch):
     use_claude_settings(tmp_path, monkeypatch, {"model": "opus", "modelSettings": {"claude-opus-5-5": {"effortLevel": "high"}}})
     job, fake, ok = run_with_choice(tmp_path, monkeypatch, "claude", Choice("sonnet", None),
-                                    SnapshotAgent({"A": "実際のモデル claude-sonnet-5・推論の強さ モデルの既定"}))  # fmt: skip
+                                    SnapshotAgent({"A": "実際のモデル claude-sonnet-5・推論の強さ モデルの標準"}))  # fmt: skip
     assert ok, "\n".join(job.log_tail())
     expected = AgentSettings("claude", model="opus", model_efforts={"claude-opus-5-5": "high"}, chosen_model="sonnet")
     assert sorted(label for label, _ in fake.settings) == ["A", "A 直し", "B", "まとめ役"]
@@ -91,7 +91,7 @@ def test_read_step_notes_removed_effort_env_once(tmp_path, monkeypatch):
     assert ok
     log = job.log_tail(1000)
     assert sum("環境変数 CLAUDE_CODE_EFFORT_LEVEL は読み取りのエージェントに渡しません" in line for line in log) == 1
-    assert any(line.endswith("読み取りの設定: Claude Code・モデル CLI の既定・推論の強さ max（videotab で指定）") for line in log)
+    assert any(line.endswith("読み取りの設定: Claude Code・モデル Claude Code の標準・推論の強さ max（videotab で指定）") for line in log)
 
 
 def test_read_step_without_env_has_no_note(tmp_path, monkeypatch):

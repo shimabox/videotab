@@ -11,6 +11,13 @@ POST /api/jobs/<ID>/info は、曲の情報（題名・作成者・元動画の�
 job.json に書き、タブ譜の組み立てより前の段が済んだ曲だけをタブ譜の組み立ての段から組み立て直す
 （読み取りはしない）。
 
+POST /api/jobs/<ID>/retry は、段を指定してやり直す。動画の曲では source_mode（"video" か "paper"）で
+楽譜の種類も変えられる。今の種類と違えば、利用者が決めた種類として meta.json に残し、帯と線の検出の
+段からやり直す（strip の段が自動で見分けた結果を、どちら向きにも直せる）。
+
+POST /api/jobs/<ID>/part は、紙の楽譜のパートの選択待ちの曲で、洗い出した一覧（paper/parts.json）に
+ある TAB のあるパートの名前と弦数を受け取り、ページとパートの選択から続ける。一覧に無い名前は断る。
+
 /files/ は作業フォルダの中のファイル（画像など）と、タブ譜のページを返す。作業フォルダには読み取りの
 エージェントも書けるので、保存された HTML は返さない。タブ譜のページ（/files/<ID>/<ID>.html）は、
 <ID>.alphatex をデータとして読み、本体のテンプレートから要求のたびに組み立てる（build.page_html）。
@@ -155,9 +162,10 @@ class App:
         if engine is None:
             return
         if engine not in ENGINES:
-            raise ValueError("engine が違います")
+            raise ValueError("読み取りに使う AI の指定（engine）が違います")
         if not available_engines()[engine]:
-            raise ValueError(f"{engine} コマンドが見つかりません（入れてログインしてから使ってください）")
+            name = agent_settings.ENGINE_NAMES[engine]
+            raise ValueError(f"{name} が見つかりません。{name} を入れてログインしたあと、videotab を起動し直してください")
 
     def check_upload(
         self,
@@ -170,12 +178,23 @@ class App:
         title: str | None = None,
         creator: str | None = None,
         source_url: str | None = None,
+        paper_mode: bool = False,
+        part: str | None = None,
+        strings: int | None = None,
     ) -> agent_settings.Choice:
         """動画の中身を読む前に確かめられることを確かめ、読み取りの選択を返す。合わなければ ValueError
-        （add.NotVideo を含む）。model / effort は None で普段の設定。"""
+        （add.NotVideo を含む）。model / effort は None で普段の設定。
+
+        紙の楽譜で part が None なら、パートはあとで一覧から選ぶ（弦数だけを確かめる）。
+        """
         self._check_engine(engine)
         choice = agent_settings.normalize_choice(engine, model, effort)
-        add.check_request(name, length, title=title, creator=creator, source_url=source_url)
+        from videotab import documents
+
+        checker = documents.check_request if Path(name).suffix.lower() in documents.EXTS else add.check_request
+        checker(name, length, title=title, creator=creator, source_url=source_url)
+        if paper_mode or checker is documents.check_request:
+            _paper_options(part, strings)
         return choice
 
     def receive(
@@ -190,30 +209,64 @@ class App:
         title: str | None = None,
         creator: str | None = None,
         source_url: str | None = None,
+        paper_mode: bool = False,
+        part: str | None = None,
+        strings: int | None = None,
     ) -> str:
         """送られた動画（stream の length バイト）を新しい作業フォルダに取り込み、順番待ちに入れる。ID を返す。
 
         中身を読む前に検査する（合わなければ ValueError）。長い書き写しで一覧や他の操作を止めないよう、
         取り込みは self.lock を握らずに行い、job.json の作成と順番待ちへの登録だけを排他区間で行う。
+        紙の楽譜で part が None なら、パートを選ぶ前の曲として保存する（strip の段が楽譜のパートを
+        洗い出して止まる）。part があれば、弦数は strings（None なら 6）。
         """
         fields = {"title": title, "creator": creator, "source_url": source_url}
-        choice = self.check_upload(name, length, engine, model, effort, **fields)
-        workdir = add.receive(stream, length, name, self.root, **fields)
+        from videotab import documents, paper
+
+        choice = self.check_upload(name, length, engine, model, effort, **fields,
+                                   paper_mode=paper_mode, part=part, strings=strings)
+        document = Path(name).suffix.lower() in documents.EXTS
+        receiver = documents.receive if document else add.receive
+        workdir = receiver(stream, length, name, self.root, **fields)
+        if paper_mode or document:
+            selected = _paper_options(part, strings)
+            # 利用者が紙の楽譜と決めた曲として記録する（strip の段が楽譜の種類を自動で見分けない）
+            paper.switch_to_paper(workdir, paper.user_choice("paper"))
+            if selected["part"] is None:
+                paper.configure_pending(workdir, selected["strings"])
+            else:
+                paper.configure(workdir, **selected)
         with self.lock:
             Job.create(workdir, engine, choice=choice)
             self._enqueue_locked(workdir.name)
         return workdir.name
 
-    def retry(self, job_id: str, step: str | None, engine: str | None, fields: dict | None = None) -> None:
+    def retry(self, job_id: str, step: str | None, engine: str | None, fields: dict | None = None,
+              paper_choice: dict | None = None, source_mode: str | None = None) -> None:
         """やり直す。fields はリクエストにあった model / effort だけの表。
 
         キーが無い項目は引き継ぐ（エンジンが変わるときは普段の設定）。None は普段の設定、
         文字列はその値（検査して、使えなければ ValueError）。
+
+        source_mode（"video" か "paper"）は動画の曲の楽譜の種類。今の種類と違えば、利用者が決めた
+        種類として切り替え、帯と線の検出の段（それより前の段を指定したときは、その段）からやり直す。
+        今の種類と同じなら切り替えず、指定された段からやり直す。写真・PDF・ZIP の曲は紙の楽譜だけ。
         """
+        from videotab import paper
+
         self._check_engine(engine)
         if step is not None and step not in STEP_NAMES:
-            raise ValueError("step が違います")
+            raise ValueError("やり直す段の指定（step）が違います")
+        if source_mode is not None and not (isinstance(source_mode, str) and source_mode in ("video", "paper")):
+            raise ValueError("楽譜の種類が違います")
         fields = fields or {}
+        selected = None
+        if paper_choice is not None:
+            if not isinstance(paper_choice, dict):
+                raise ValueError("紙の楽譜の指定が違います")
+            if source_mode == "video":
+                raise ValueError("画面のタブ譜としてやり直すときは、パートを指定できません")
+            selected = paper.options(paper_choice.get("part"), paper_choice.get("strings"))
         with self.lock:  # 状態の確認・書き換え・登録を 1 つの排他区間で行う
             self._folder(job_id)  # 順番待ちに入る ID を、実際のフォルダ名と同じ綴りに限る
             job = Job(self.root / job_id)
@@ -236,9 +289,71 @@ class App:
                 choice = agent_settings.Choice(model, effort)
             if self._busy(job_id):
                 raise Busy("実行中か順番待ちです")
+            meta = load_meta(job.workdir)
+            if source_mode == "video" and meta.get("source_kind") == "document":
+                raise ValueError("写真・PDF・ZIP の曲は、紙の楽譜としてだけ扱えます")
+            if source_mode is not None and source_mode != ("paper" if meta.get("paper") else "video"):
+                # 楽譜の種類を変えたら、前の種類の検出結果・拡大画像・読み取り結果を使い回さない
+                if step is None or STEP_NAMES.index(step) > STEP_NAMES.index("strip"):
+                    step = "strip"
+                with job.hold():
+                    if source_mode == "paper":
+                        paper.switch_to_paper(job.workdir, paper.user_choice("paper"), notify=job.log)
+                        if selected is not None:
+                            paper.configure(job.workdir, **selected)
+                    else:
+                        paper.switch_to_screen(job.workdir, notify=job.log)
+                        job.clear_source_mode()
+                    job.reset_from(step, engine, choice)
+                self._enqueue_locked(job_id)
+                return
+            if selected is not None:
+                stored = load_meta(job.workdir).get("paper")
+                if not stored:
+                    raise ValueError("この曲は紙の楽譜ではありません")
+                if selected != stored:
+                    # パート変更では前のパートの拡大画像・読み取り結果を使い回さない。
+                    step = "strip"
+                    with job.hold():
+                        paper.configure(job.workdir, **selected)
+                        job.reset_from(step, engine, choice)
+                    self._enqueue_locked(job_id)
+                    return
             if step is None:
                 step = next((s["name"] for s in data["steps"] if s["status"] != "done"), "add")
             job.reset_from(step, engine, choice)
+            self._enqueue_locked(job_id)
+
+    def choose_part(self, job_id: str, part, strings) -> None:
+        """パートの選択待ちの曲で、洗い出した一覧から書き起こすパートを選び、ページとパートの選択から続ける。
+
+        受け付けるのは、一覧にある TAB のあるパートの名前（完全に同じ綴り）と、弦数 4 か 6 だけ。
+        合わなければ ValueError、曲でなければ KeyError、実行中・順番待ちなら Busy。
+        一覧（parts.json）はエージェントが書いたファイルなので、ここでも検査し直したものを使う。
+        """
+        from videotab import paper
+
+        with self.lock:  # 状態の確認・書き換え・登録を 1 つの排他区間で行う
+            self._folder(job_id)
+            job = Job(self.root / job_id)
+            if not job.load():
+                raise KeyError(job_id)
+            if self._busy(job_id):
+                raise Busy("実行中か順番待ちです")
+            stored = load_meta(job.workdir).get("paper")
+            if not isinstance(stored, dict) or paper.is_chosen(stored):
+                raise ValueError("パートの選択待ちの曲ではありません")
+            names = [p["name"] for p in paper.load_parts(job.workdir) if p["tab"]]
+            if not names:
+                raise ValueError(
+                    "楽譜で見つかったパートの一覧を読めません。「やり直す」で「ページとパートの選択」からやり直してください"
+                )
+            if not isinstance(part, str) or part not in names:
+                raise ValueError("一覧にある、TAB のあるパートを選んでください")
+            selected = paper.options(part, strings)
+            with job.hold():
+                paper.configure(job.workdir, **selected)
+                job.reset_from("strip")  # エンジンと、モデル・推論の強さの選択は引き継ぐ
             self._enqueue_locked(job_id)
 
     def cancel(self, job_id: str) -> None:
@@ -258,7 +373,10 @@ class App:
                 self.running_job.cancel.cancel()
                 return
         if Job(self.root / job_id).is_locked():
-            raise Busy("別の videotab（videotab run など）で実行中なので、画面からは止められません")
+            raise Busy(
+                "ターミナルで動かしている別の videotab（videotab run など）が実行中なので、画面からは止められません。"
+                "止めるときは、そのターミナルで control + C を押してください"
+            )
         raise ValueError("実行中でも順番待ちでもありません")
 
     def _stopping(self, job_id: str) -> bool:
@@ -412,6 +530,33 @@ class App:
         else:
             for p in sorted((d / "readers").glob("notes_*.md")) if (d / "readers").exists() else []:
                 notes[p.stem.removeprefix("notes_")] = p.read_text(encoding="utf-8")
+        for who, name in (("パートの洗い出し", "parts.md"), ("ページとパート", "notes.md")):
+            if (d / "paper" / name).exists() and isinstance(notes, dict):
+                notes[who] = (d / "paper" / name).read_text(encoding="utf-8")
+        parts = []
+        if isinstance(meta.get("paper"), dict):
+            from videotab import paper
+
+            parts = paper.load_parts(d)  # エージェントが書いたファイルなので、出すたびに検査し直す
+        previews = []
+        pages_path = d / "pages" / "pages.json"
+        if meta.get("paper") and pages_path.exists():
+            try:
+                page_data = read_json(pages_path)
+                selected = meta.get("paper")
+                rows = page_data.get("pages", []) if isinstance(selected, dict) and all(
+                    page_data.get(k) == selected.get(k) for k in ("part", "strings")
+                ) else []
+                for row in rows[:200]:
+                    if not isinstance(row, dict):
+                        continue
+                    names = [row.get("context"), *(row.get("images") or [])]
+                    names = [name for name in names if isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_-]+\.png", name)]
+                    if names:
+                        previews.append({"page": row.get("page"), "source_page": row.get("source_page"),
+                                         "system": row.get("system"), "images": names})
+            except (ValueError, TypeError, AttributeError):
+                pass
         engine = data.get("engine") or DEFAULT_ENGINE
         status = self._live_status(job_id, data.get("status") or ("done" if html else "idle"))
         return {
@@ -425,6 +570,14 @@ class App:
             "rebuildable": rebuildable(data),
             "engine": engine,
             "choice": agent_settings.shown_choice(engine, data.get("choice")),
+            "paper": meta.get("paper"),
+            # 動画の曲か、写真・PDF・ZIP の曲か（やり直しの行の「楽譜の種類」は動画の曲だけに出す）
+            "source_kind": "document" if meta.get("source_kind") == "document" else "video",
+            # 楽譜の種類をだれが決めたか（strip の段が見分けた・利用者が決めた）。記録が無ければ null
+            "source_choice": _source_choice(meta),
+            # 紙の楽譜で洗い出したパートの一覧（検査済み）。無い・検査に通らないときは空
+            "parts": parts,
+            "paper_previews": previews,
             "status": status,
             "stopping": status == "running" and self._stopping(job_id),
             # job.json の label は作ったときの表示名なので、段の name から今の表示名にして出す
@@ -561,6 +714,36 @@ def _read_own_json(workdir: Path, name: str) -> dict | None:
     return data
 
 
+def _paper_options(part: str | None, strings: int | None) -> dict:
+    """新しく取り込む紙の楽譜の設定。part が無ければパートを選ぶ前の設定（弦数だけを確かめる）。"""
+    from videotab import paper
+
+    if part is None:
+        return paper.pending_options(strings)
+    return paper.options(part, 6 if strings is None else strings)
+
+
+def _source_choice(meta: dict) -> dict | None:
+    """詳細に出す楽譜の種類の記録（meta.json の source_choice）。無い・形が違うときは None。
+
+    meta.json は読み手も書けるので、知っている項目だけを確かめ直して出す。
+    """
+    from videotab.strip import frame_counts
+
+    choice = meta.get("source_choice")
+    if not isinstance(choice, dict):
+        return None
+    mode, by = choice.get("mode"), choice.get("by")
+    if not (isinstance(mode, str) and mode in ("video", "paper") and isinstance(by, str) and by in ("auto", "user")):
+        return None
+    shown = {"mode": mode, "by": by}
+    for key in ("tab_frames", "located_frames"):
+        counts = frame_counts(choice.get(key))
+        if counts is not None:
+            shown[key] = list(counts)
+    return shown
+
+
 def file_title(meta: dict) -> str | None:
     """題名を空にしたときの題名: 元の動画のファイル名（拡張子を除く）。
 
@@ -637,7 +820,8 @@ def make_handler(app: App):
 
         def do_GET(self):
             if not self._local_host():
-                return self._error(HTTPStatus.FORBIDDEN, "127.0.0.1 か localhost で開いてください")
+                port = self.server.server_address[1]
+                return self._error(HTTPStatus.FORBIDDEN, f"このアドレスでは開けません。ブラウザで http://127.0.0.1:{port}/ を開いてください")
             path = unquote(urlparse(self.path).path)
             if path == "/":
                 return self._send(200, page, "text/html; charset=utf-8", PAGE_HEADERS)
@@ -691,13 +875,13 @@ def make_handler(app: App):
             raw = self.headers.get("Content-Length")
             if raw is None:
                 if required:
-                    return HTTPStatus.LENGTH_REQUIRED, "本文の大きさ（Content-Length）がありません"
+                    return HTTPStatus.LENGTH_REQUIRED, "送られた内容の大きさがわかりません（Content-Length がありません）"
                 return 0
             if not re.fullmatch(r"[0-9]+", raw.strip()):
-                return HTTPStatus.BAD_REQUEST, "本文の大きさ（Content-Length）が数字ではありません"
+                return HTTPStatus.BAD_REQUEST, "送られた内容の大きさがわかりません（Content-Length が数字ではありません）"
             length = int(raw)
             if length > limit:
-                return HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"大きすぎます（{_size_text(limit)} まで）"
+                return HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"送る内容が大きすぎます（{_size_text(limit)} まで）"
             return length
 
         def do_POST(self):
@@ -708,7 +892,7 @@ def make_handler(app: App):
             if path == "/api/uploads":
                 return self._upload(parse_qs(parsed.query))
             if path.startswith("/api/jobs/"):
-                for action in ("cancel", "retry", "info"):
+                for action in ("cancel", "retry", "info", "part"):
                     if path.endswith(f"/{action}"):
                         return self._job_action(path, action)
             return self._error(404, "ありません")
@@ -723,27 +907,38 @@ def make_handler(app: App):
                 return (query.get(key) or [None])[0] or None
 
             try:
+                mode = q("source_mode") or "video"
+                if mode not in ("video", "paper"):
+                    raise ValueError("楽譜の種類が違います")
+                # パートが空なら、あとで一覧から選ぶ。弦数は、送られたときだけ決める
+                strings = int(q("strings")) if q("strings") else None
+                paper_opts = {"paper_mode": True, "part": q("part"), "strings": strings} if mode == "paper" else {}
                 job_id = app.receive(
                     self.rfile, length, q("name") or "", q("engine") or DEFAULT_ENGINE, q("model"), q("effort"),
-                    title=q("title"), creator=q("creator"), source_url=q("source_url"),
+                    title=q("title"), creator=q("creator"), source_url=q("source_url"), **paper_opts,
                 )  # fmt: skip
             except ValueError as e:  # 入力の項目の誤り（読む前）と、動画として読めない（add.NotVideo）
                 return self._error(400, str(e))
             except (OSError, SystemExit) as e:  # ffprobe が無い・書けないなど
-                return self._error(500, f"取り込めませんでした（{inside.reason(e)}）")
+                if isinstance(e, SystemExit):
+                    return self._error(500, f"取り込めませんでした。{inside.reason(e)}")
+                return self._error(
+                    500, f"取り込めませんでした。Mac の空き容量を確かめて、もう一度送ってください（{inside.reason(e)}）"
+                )
             return self._json({"id": job_id}, 201)
 
         def _job_action(self, path: str, action: str):
-            """曲への操作（cancel: 止める、retry: やり直す、info: 曲の情報を書き換える）。本文は JSON。"""
+            """曲への操作（cancel: 止める、retry: やり直す、info: 曲の情報を書き換える、
+            part: 紙の楽譜のパートを一覧から選ぶ）。本文は JSON。"""
             length = self._length(MAX_JSON, required=False)
             if isinstance(length, tuple):
                 return self._error(*length)
             try:
                 body = json.loads(self.rfile.read(length) or b"{}")
             except (json.JSONDecodeError, UnicodeDecodeError):
-                return self._error(400, "JSON が読めません")
+                return self._error(400, "送られた内容を読めません（JSON として読めません）")
             if not isinstance(body, dict):
-                return self._error(400, "JSON の形が違います")
+                return self._error(400, "送られた内容の形が違います（JSON の形が違います）")
             job_id = path.removeprefix("/api/jobs/").removesuffix(f"/{action}")
             if not ID_PATTERN.fullmatch(job_id):
                 return self._error(404, "ありません")
@@ -753,13 +948,18 @@ def make_handler(app: App):
                     app.cancel(job_id)
                 elif action == "retry":
                     fields = {k: body[k] for k in ("model", "effort") if k in body}
-                    app.retry(job_id, body.get("step"), body.get("engine"), fields)
+                    # 紙の楽譜のパート・弦数と、動画の曲の楽譜の種類は、送られたときだけ渡す
+                    extra = {arg: body[key] for key, arg in (("paper", "paper_choice"), ("source_mode", "source_mode"))
+                             if key in body}  # fmt: skip
+                    app.retry(job_id, body.get("step"), body.get("engine"), fields, **extra)
                 elif action == "info":
                     # 欠けた項目を空として扱うと、一部だけの本文で値が消えるので、すべて求める
                     missing = [k for k in INFO_KEYS if k not in body]
                     if missing:
                         raise ValueError(f"{'・'.join(missing)} がありません")
                     result["rebuilt"] = app.edit(job_id, body["title"], body["creator"], body["source_url"])
+                elif action == "part":
+                    app.choose_part(job_id, body.get("part"), body.get("strings"))
             except Busy as e:
                 return self._error(409, str(e))
             except KeyError:
@@ -769,7 +969,7 @@ def make_handler(app: App):
             except ValueError as e:
                 return self._error(400, str(e))
             except (Exception, SystemExit) as e:  # noqa: BLE001 - job.json を書けないなどを画面に返す
-                return self._error(500, f"{type(e).__name__}: {e}")
+                return self._error(500, f"うまくいきませんでした。少し待ってから、もう一度試してください（{type(e).__name__}: {e}）")
             return self._json(result)
 
         def do_DELETE(self):
@@ -785,9 +985,11 @@ def make_handler(app: App):
             except KeyError:
                 return self._error(404, "ありません")
             except Busy as e:
-                return self._error(409, f"消せません: {e}")
+                return self._error(409, f"消せません（{e}）")
             except Exception as e:  # noqa: BLE001 - 消す途中の失敗を画面に返す
-                return self._error(500, f"消す途中で失敗しました: {type(e).__name__}: {e}")
+                return self._error(
+                    500, f"消す途中で失敗しました。もう一度「この曲を消す」を押してください（{type(e).__name__}: {e}）"
+                )
             return self._json({"deleted": job_id})
 
     return Handler

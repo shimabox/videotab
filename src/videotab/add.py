@@ -3,7 +3,7 @@
 取り込みの手順:
   1. 置き場（作業フォルダの親）に、本体専用の一時フォルダ（inside.stage）を作る
   2. 一時フォルダの video.part へ、ちょうど渡された長さだけ書き写す
-  3. ffprobe で映像が入っていることを確かめる
+  3. ffprobe で映像が入っていることを確かめる（幅・高さは回転を適用したあとの向き）
   4. 新しい ID で作業フォルダを作る（名前がぶつかったら ID を作り直す）
   5. 付け替えで video.<拡張子> として取り込み、meta.json を書く
 4 以降で失敗したら、作った作業フォルダを消す。一時フォルダは成功でも失敗でも残さない。
@@ -140,7 +140,10 @@ def find_video(workdir: Path) -> Path | None:
 def ffprobe_bin() -> str:
     found = shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe"
     if not Path(found).exists():
-        raise SystemExit("ffprobe が見つかりません（ffmpeg を入れると一緒に入ります）")
+        raise SystemExit(
+            "ffprobe が見つかりません。ffprobe は ffmpeg（動画を画像にするソフト）と一緒に入ります。"
+            "ターミナルで brew install ffmpeg を実行して入れてください"
+        )
     return found
 
 
@@ -153,15 +156,31 @@ def probe_command(path: Path) -> list[str]:
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=width,height:format=duration,format_name",
+        "stream=width,height:stream_side_data=rotation:stream_tags=rotate:format=duration,format_name",
         "-of",
         "json",
         str(path),
     ]
 
 
+def _rotation(stream: dict) -> int:
+    """映像の回転（度）。新しい ffprobe は side_data_list の rotation、古い版は tags の rotate。
+    どちらも無い・読めないなら 0。向きの符号は版で逆だが、幅と高さの入れ替えの判定には影響しない。"""
+    for side in stream.get("side_data_list") or []:
+        if "rotation" in side:
+            try:
+                return int(round(float(side["rotation"])))
+            except (TypeError, ValueError, OverflowError):
+                break
+    try:
+        return int(round(float((stream.get("tags") or {}).get("rotate"))))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def probe(path: Path) -> dict:
-    """動画の映像の幅・高さと長さ（秒）。映像が無い・受け付ける入れ物として読めなければ NotVideo。"""
+    """動画の映像の幅・高さと長さ（秒）。幅・高さは回転を適用したあとの向き。
+    映像が無い・受け付ける入れ物として読めなければ NotVideo。"""
     proc = subprocess.run(probe_command(path), capture_output=True, text=True, stdin=subprocess.DEVNULL)
     try:
         data = json.loads(proc.stdout or "{}")
@@ -177,7 +196,10 @@ def probe(path: Path) -> dict:
         duration = round(float(fmt.get("duration")), 3)
     except (TypeError, ValueError):
         duration = None
-    return {"width": streams[0].get("width"), "height": streams[0].get("height"), "duration": duration}
+    width, height = streams[0].get("width"), streams[0].get("height")
+    if _rotation(streams[0]) % 180 == 90:  # 90 の奇数倍（-90、90、270 など）なら縦横を入れ替える
+        width, height = height, width
+    return {"width": width, "height": height, "duration": duration}
 
 
 def add(

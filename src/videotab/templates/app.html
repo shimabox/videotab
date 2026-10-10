@@ -85,6 +85,7 @@
   }
   form.new .upload { display: flex; gap: 10px; align-items: center; font-size: 0.85rem; color: var(--muted); }
   form.new .upload[hidden] { display: none; }
+  .pick[hidden] { display: none; }
   form.new .upload progress { flex: 1 1 auto; max-width: 420px; }
   .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
   .seg label { padding: 9px 12px; cursor: pointer; font-size: 0.88rem; color: var(--muted); }
@@ -157,6 +158,7 @@
   .st-failed .dot, .st-stopped .dot { background: var(--bad); } .st-failed, .st-stopped { color: var(--bad); }
   .st-running .dot { background: var(--run); animation: pulse 1.2s infinite; } .st-running { color: var(--run); }
   .st-queued .dot { background: var(--warn); } .st-queued { color: var(--warn); }
+  .st-waiting .dot { background: var(--accent); } .st-waiting { color: var(--accent); }
   @keyframes pulse { 50% { opacity: 0.3; } }
 
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 0 18px 18px; }
@@ -189,7 +191,15 @@
   .actions .retry-main { display: flex; gap: 8px 10px; flex-wrap: wrap; align-items: center; }
   .retry-main .pick { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--muted); min-width: 0; max-width: 100%; }
   .retry-main .pick select { font-size: 0.86rem; padding: 7px 8px; min-width: 0; max-width: 100%; }
-  .retry-main select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  /* やり直しの行のパートの欄も select と同じ見た目にする */
+  .retry-main .pick input {
+    font: inherit; font-size: 0.86rem; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--ink); width: 14em; min-width: 0; max-width: 100%;
+  }
+  .retry-main select:focus, .retry-main input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .retry-main .retry-note { flex-basis: 100%; font-size: 0.8rem; color: var(--muted); }
+  /* パート・弦数の欄は、楽譜の種類が紙の楽譜のときだけ出す（上の display より強くして隠す） */
+  .retry-main .pick[hidden], .retry-main .retry-note[hidden] { display: none; }
   .retry-go-row { display: flex; }
   button.retry-go { border-color: var(--accent); color: var(--accent); background: var(--panel); font-weight: 600; }
   button.retry-go:hover:not(:disabled) { background: var(--accent-soft); }
@@ -200,8 +210,19 @@
     .retry-main .pick { flex: 1 1 100%; }
     .retry-main .pick > span, .actions.retry .pick-row .pick > span { flex: none; width: var(--retry-label); }
     .retry-main .pick select { flex: 1 1 auto; }
+    .retry-main .pick input { flex: 1 1 auto; width: auto; }
     .actions.retry .picker .pick-custom { margin-left: calc(var(--retry-label) + 6px); }
   }
+
+  /* 紙の楽譜のパートを選ぶ区画。やり直しの行と同じく線で区切り、見出し・一覧・弦数とボタンの順に積む */
+  .actions.part-choose { flex-direction: column; align-items: stretch; gap: 8px; border-top: 1px solid var(--line); margin-top: 16px; padding-top: 14px; }
+  .part-choose p { margin: 0; color: var(--muted); font-size: 0.82rem; }
+  .part-list { display: flex; flex-direction: column; gap: 4px; }
+  .part-option { display: flex; gap: 8px; align-items: baseline; font-size: 0.9rem; cursor: pointer; overflow-wrap: anywhere; }
+  .part-option.off { color: var(--muted); cursor: default; }
+  .part-option .part-name { font-weight: 600; }
+  .part-option .part-note { color: var(--muted); font-size: 0.8rem; }
+  .found-parts ul { margin: 8px 0 0; padding-left: 1.4em; font-size: 0.86rem; overflow-wrap: anywhere; }
 
   /* 曲の情報（題名・作成者・元動画のページ）。3 つの欄を横に並べ、狭い幅では縦に積む */
   /* .actions の折り返しを残すと、欄の行の高さを折り返したときの高さで見積もり、保存ボタンとの間が空く */
@@ -222,7 +243,7 @@
   .info-buttons { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .info-msg { font-size: 0.82rem; color: var(--muted); }
   .info-msg.bad { color: var(--bad); }
-  .p-edit > p.info-msg { margin: 12px 0 0; }
+  .p-edit > p.info-msg, .p-parts > p.info-msg { margin: 12px 0 0; }
   @media (max-width: 560px) { .info-field, .info-field.wide { flex-basis: 100%; } }
 
   button.del-outline {
@@ -280,12 +301,12 @@
 <header class="top">
   <h1>videotab</h1>
   <span class="version">v__VERSION__</span>
-  <p>手元の動画ファイルから、画面に写るタブ譜を 1 枚の楽譜に書き起こします</p>
+  <p>手元の動画や紙の楽譜の写真から、タブ譜を 1 枚の楽譜に書き起こします</p>
 </header>
 <main>
   <form class="new" id="new">
     <label class="drop" id="drop">
-      <input type="file" id="file" accept=".mp4,.m4v,.mov,.webm,.mkv,.avi" aria-label="動画ファイル">
+      <input type="file" id="file" accept=".mp4,.m4v,.mov,.webm,.mkv,.avi,.png,.jpg,.jpeg,.pdf,.zip" aria-label="動画・写真・PDF・画像 ZIP">
       <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
         <path d="M12 15V4"/><path d="M7.5 8.5 12 4l4.5 4.5"/><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/>
@@ -295,8 +316,8 @@
       <span class="drop-note" id="drop-note"></span>
     </label>
     <div class="pick-row">
-      <div class="pick engine-pick"><span>読み取り</span>
-        <div class="seg" role="radiogroup" aria-label="読み取りに使うエージェント" id="engines"></div>
+      <div class="pick engine-pick" title="タブ譜の画像を読み取る AI。この Mac に入れてログインしてある Claude Code か Codex を使います"><span>読み取り</span>
+        <div class="seg" role="radiogroup" aria-label="読み取りに使う AI" id="engines"></div>
       </div>
       <span id="new-picker"></span>
       <button class="primary" type="submit" id="go">タブ譜を作る</button>
@@ -314,15 +335,16 @@
       <h2>曲</h2>
       <ul id="jobs"></ul>
     </section>
-    <section id="detail"><div class="panel"><p class="welcome">動画ファイルを選ぶかドロップして「タブ譜を作る」を押すと、ここに進み具合が出ます。</p></div></section>
+    <section id="detail"><div class="panel"><p class="welcome">動画か楽譜のファイルを選ぶかドロップして「タブ譜を作る」を押すと、ここに進み具合が出ます。</p></div></section>
   </div>
 </main>
 <footer class="disclaimer">
   <h2>使う前に知っておくこと</h2>
   <ul>
-    <li>タブ譜の数字やリズムは、切り出した画像を Claude Code か Codex に渡して読み取ります（あなたのログインと利用枠を使います）。</li>
+    <li>タブ譜の数字やリズムは、切り出した画像を Claude Code か Codex（AI）に渡して読み取ります。あなたがログインしている Claude Code / Codex の利用枠（契約ごとに決まっている、AI を使える量）を使います。</li>
+    <li>モデルは AI の種類、推論の強さは AI がどれだけ時間をかけて考えるかです。強いほど丁寧になりやすいですが、遅く、利用枠も多く使います。</li>
     <li>1 曲に数分〜十数分かかります。</li>
-    <li>動画・画像・タブ譜は、この PC の work/ に保存します。</li>
+    <li>動画・画像・タブ譜は、この Mac の videotab のフォルダの中の work フォルダに保存します。</li>
   </ul>
   <h2>免責事項</h2>
   <ul>
@@ -336,13 +358,36 @@
 (function () {
   "use strict";
   var ENGINE_LABELS = { claude: "Claude Code", codex: "Codex" };
-  var STATUS_LABELS = { done: "できあがり", running: "実行中", queued: "順番待ち", failed: "失敗", stopped: "中断", idle: "—" };
+  var STATUS_LABELS = { done: "できあがり", running: "実行中", queued: "順番待ち", failed: "失敗", stopped: "中断", waiting: "パートの選択待ち", idle: "—" };
+  // 欄の名前に添える説明（title）
+  var ENGINE_HELP = "タブ譜の画像を読み取る AI。この Mac に入れてログインしてある Claude Code か Codex を使います";
+  var MODEL_HELP = "読み取りに使う AI のモデル（AI の種類）。「普段の設定」は、Claude Code / Codex で自分が使っているモデルです";
+  var EFFORT_HELP = "AI がどれだけ時間をかけて考えるか。強いほど丁寧になりやすいが、遅く、利用枠も多く使います";
+  // 推論の強さの値に添える日本語の強弱（表示だけ。送る値は英語のまま）
+  var EFFORT_NAMES = { minimal: "最も弱い", low: "弱い", medium: "中くらい", high: "強い", xhigh: "とても強い", max: "最も強い" };
+  // 段の名前に添える、何をする段かの説明（段の一覧と「どの段から」の title）。キーは段の表示名
+  var STEP_HELP = {
+    "動画の取り込み": "選んだ動画を videotab のフォルダに取り込みます",
+    "楽譜の取り込み": "選んだ写真・PDF・ZIP・動画を videotab のフォルダに取り込みます",
+    "画像の切り出し": "動画から画像を切り出します（写真・PDF・ZIP は 1 ページ 1 枚の画像にします）",
+    "帯と線の検出": "画像の中で、タブ譜が写っている横長の範囲（帯）と 6 本の弦の線の位置を探します。紙の楽譜を撮った動画かどうかも、ここで見分けます",
+    "ページとパートの選択": "楽譜にあるパートを AI が探し、書き起こすパートが載っているページと段を選びます",
+    "ページ分け": "画面が切り替わる所でページに分け、読み取り用に拡大した画像を作ります",
+    "段の補正と拡大": "楽譜の段（横 1 行）ごとに、傾きやゆがみを直して、読み取り用に拡大した画像を作ります",
+    "読み取り": "AI が拡大した画像から、フレット番号・リズム・記号を読み取ります",
+    "タブ譜の組み立て": "読み取った小節をつないで、1 枚のタブ譜にします",
+    "時刻の照合": "タブ譜の小節が鳴り始める時刻が、動画と合っているかを確かめます",
+    "検査結果の確認": "小節と拍の数が合っているかを確かめます（紙の楽譜には演奏の時刻が無いので、時刻は照らしません）"
+  };
+  // 画面から videotab に届かない（通信の失敗）ときの文。ブラウザの英語の原文は括弧に回す
+  var OFFLINE = "videotab に届きません。videotab を起動したターミナルが開いたままか確かめ、閉じていたら、ターミナルでもう一度起動してください";
   var selected = decodeURIComponent(location.hash.slice(1)) || null;
   var current = null;
   var pollTimer = null;
   // { id, step, engine, picks: { エンジン: モデルと推論の強さの欄の状態 } }: 行を作り直すときの初期値
   var retryChoice = {};
   var retryRow = null;  // やり直しの行（同じ曲・同じ状態の間は同じ DOM を使う）
+  var partRow = null;  // 紙の楽譜のパートを選ぶ区画（同じ曲・同じ一覧の間は同じ DOM を使う）
   var infoRow = null;  // 曲の情報の行（同じ曲・同じ状態の間は同じ DOM を使う）
   var infoNotice = null;  // 曲の情報を保存した結果の文（{ id, text, rebuilt, seenBusy }）
   var shownResult = null;  // いま見えているタブ譜のパネルの結果キー（id・html・更新時刻）。無ければ null。同じなら iframe を作り直さない
@@ -372,6 +417,14 @@
     (children || []).forEach(function (c) { if (c) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
     return e;
   }
+  function effortText(v) { return EFFORT_NAMES[v] ? v + "（" + EFFORT_NAMES[v] + "）" : v; }
+  // 段の説明を title に付ける
+  function withHelp(e, label) {
+    if (STEP_HELP[label]) e.title = STEP_HELP[label];
+    return e;
+  }
+  // 操作が失敗したときの文。サーバーが返したエラー（status あり）はその文、通信の失敗は OFFLINE
+  function errorText(e) { return e.status ? e.message : OFFLINE + "（" + e.message + "）"; }
   // method を省くと、本文があれば POST、無ければ GET。GET 以外は画面からの操作の見出し（X-Videotab）を付ける
   function api(path, body, method) {
     method = method || (body === undefined ? "GET" : "POST");
@@ -476,9 +529,9 @@
     var effort = el("select", { class: "pick-effort", "aria-label": "読み取りの推論の強さ" });
     var error = el("span", { class: "pick-error", "aria-live": "polite" });
     var root = el("span", { class: "picker" }, [
-      el("label", { class: "pick" }, [el("span", { text: "モデル" }), model]),
+      el("label", { class: "pick", title: MODEL_HELP }, [el("span", { text: "モデル" }), model]),
       custom, names,
-      el("label", { class: "pick" }, [el("span", { text: "推論の強さ" }), effort]),
+      el("label", { class: "pick", title: EFFORT_HELP }, [el("span", { text: "推論の強さ" }), effort]),
       error
     ]);
     var engine = null;
@@ -500,7 +553,7 @@
       var o = engineOptions(engine), u = o.usual || {};
       model.options[0].textContent = "普段の設定（" + (u.model || "—") + "）";
       var eu = engine === "claude" && model.value !== "" ? u.effort_with_model : u.effort;
-      effort.options[0].textContent = "普段の設定（" + (eu || "—") + "）";
+      effort.options[0].textContent = "普段の設定（" + (EFFORT_NAMES[eu] ? eu + "・" + EFFORT_NAMES[eu] : eu || "—") + "）";
       var list = remembered(engine).names;
       if (o.model_hint && list.indexOf(o.model_hint) < 0) list = list.concat([o.model_hint]);
       var sig = list.join("\n");
@@ -519,7 +572,7 @@
       model.appendChild(el("option", { value: OTHER, text: "その他（入力）" }));
       effort.textContent = "";
       effort.appendChild(el("option", { value: "" }));
-      engineOptions(engine).efforts.forEach(function (v) { effort.appendChild(el("option", { value: v, text: v })); });
+      engineOptions(engine).efforts.forEach(function (v) { effort.appendChild(el("option", { value: v, text: effortText(v) })); });
       model.value = st.sel;
       if (model.selectedIndex < 0) model.value = "";
       custom.value = st.sel === OTHER ? st.text : "";
@@ -722,14 +775,14 @@
       .then(function (r) {
         infoNotice = { id: id, rebuilt: !!r.rebuilt, seenBusy: false,
           text: r.rebuilt ? "保存しました。タブ譜に反映しています（読み取りはやり直しません）"
-            : "保存しました。タブ譜には、続きを実行して組み立てたときに出ます" };
+            : "保存しました。タブ譜には、組み立てるときに入ります（止まっている曲は、下の「やり直す」で続きを進めてください）" };
         if (infoRow === row) infoRow = null;  // 保存済みの値で行を作り直す
         return refresh();
       }, function (e) {
         row.saving = false;
         row.save.disabled = false;
         row.msg.className = "info-msg bad";
-        row.msg.textContent = e.status ? e.message : "サーバーに届きません: " + e.message;
+        row.msg.textContent = errorText(e);
       });
   }
 
@@ -737,7 +790,7 @@
     var row = { key: key, job: d, saving: false };
     row.title = infoField("題名", { type: "text", maxlength: "200" });
     row.creator = infoField("動画の作成者（任意）", { type: "text", maxlength: "200" });
-    row.link = infoField("元動画のページ（任意、https のみ）", { type: "text", maxlength: "2000", inputmode: "url",
+    row.link = infoField("元動画のページ（任意。https:// で始まるアドレス）", { type: "text", maxlength: "2000", inputmode: "url",
       autocomplete: "off", spellcheck: "false", placeholder: "https://example.com/..." }, true);
     row.save = el("button", { type: "submit", class: "primary" });
     row.msg = el("span", { class: "info-msg", "aria-live": "polite" });
@@ -782,6 +835,101 @@
     if (infoRow && !infoRow.saving && infoRow.msg.className === "info-msg") infoRow.msg.textContent = notice;
   }
 
+  // --- 紙の楽譜のパートを選ぶ
+
+  var CONFIDENCE_LABELS = { high: "高", medium: "中", low: "低" };
+  function stringsSelect() {
+    return el("select", { "aria-label": "弦数" }, [el("option", { value: "6", text: "6 弦" }), el("option", { value: "4", text: "4 弦" })]);
+  }
+  // 一覧の 1 行の説明（名前のあとの括弧の中）
+  function partNote(p) {
+    if (!p.tab) return "TAB なし（選べません）";
+    var notes = [p.strings ? p.strings + " 弦の見込み" : "弦数の見込みなし"];
+    if (CONFIDENCE_LABELS[p.confidence]) notes.push("確信度 " + CONFIDENCE_LABELS[p.confidence]);
+    if (p.frames && p.frames.length) notes.push("ページ " + p.frames.join(", "));
+    return notes.join("・");
+  }
+
+  // 選んだパートと弦数を送る。id は区画を作ったときの値を使う（送る間に選択が変わっても取り違えない）
+  function choosePart(row) {
+    if (!row.picked || row.sending) return;
+    row.sending = true;
+    row.go.disabled = true;
+    row.msg.textContent = "";
+    api("/api/jobs/" + encodeURIComponent(row.id) + "/part", { part: row.picked.name, strings: Number(row.strings.value) })
+      .then(function () { return refresh(); }, function (e) {
+        row.sending = false;
+        row.go.disabled = false;
+        row.msg.textContent = errorText(e);
+        return refresh();
+      });
+  }
+
+  // 名前はエージェントが楽譜から読んだ文字なので、どれも el() の text で文字として入れる
+  function buildPartRow(d, key) {
+    var row = { key: key, id: d.id, picked: null, sending: false };
+    row.strings = stringsSelect();
+    row.go = el("button", { type: "submit", class: "primary", text: "このパートで続ける" });
+    row.go.disabled = true;
+    row.msg = el("span", { class: "info-msg bad", "aria-live": "polite" });
+    var list = el("div", { class: "part-list", role: "radiogroup", "aria-label": "書き起こすパート" });
+    var choices = d.parts.filter(function (p) { return p.tab; }).length;
+    d.parts.forEach(function (p) {
+      var radio = el("input", { type: "radio", name: "part-choice" });
+      radio.disabled = !p.tab;
+      function pick() {
+        row.picked = p;
+        row.strings.value = p.strings === 4 ? "4" : "6";  // 見込みが無ければ 6。選んだあとで変えられる
+        row.go.disabled = row.sending;
+      }
+      radio.addEventListener("change", pick);
+      if (p.tab && choices === 1) { radio.checked = true; pick(); }
+      list.appendChild(el("label", { class: "part-option" + (p.tab ? "" : " off") }, [
+        radio, el("span", { class: "part-name", text: p.name }), el("span", { class: "part-note", text: "（" + partNote(p) + "）" })
+      ]));
+    });
+    row.el = el("form", { class: "actions part-choose", onsubmit: function (ev) { ev.preventDefault(); choosePart(row); } }, [
+      el("span", { class: "info-title", text: "パートを選ぶ" }),
+      el("p", { text: "楽譜で見つかったパートです。書き起こすパートを選ぶと、「ページとパートの選択」の段から続けます。" }),
+      list,
+      el("div", { class: "retry-main" }, [
+        el("label", { class: "pick" }, [el("span", { text: "弦数" }), row.strings]),
+        row.go, row.msg
+      ])
+    ]);
+    return row;
+  }
+
+  // パートの選択待ちか。パートが決まっている曲では、状態が選択待ちのままでも選ばせない（送っても断られる）
+  function choosingPart(d) {
+    return d.status === "waiting" && !(d.paper && d.paper.part != null);
+  }
+
+  // パートを選ぶ区画を出す・保つ。出すのはパートの選択待ちの間だけで、同じ曲・同じ一覧の間は作り直さない
+  // （選んだ行・弦数・フォーカスを保つ）
+  function renderParts(area, d) {
+    var waiting = choosingPart(d);
+    var listed = waiting && d.parts && d.parts.length > 0;
+    var key = waiting ? d.id + "|" + (listed ? JSON.stringify(d.parts) : "") : null;
+    if (partRow && partRow.key === key) return;
+    area.textContent = "";
+    partRow = null;
+    if (listed) {
+      partRow = buildPartRow(d, key);
+      area.appendChild(partRow.el);
+    } else if (waiting) {
+      partRow = { key: key };
+      area.appendChild(el("p", { class: "info-msg", text: "楽譜で見つかったパートの一覧を読めません。下の「やり直す」で、「ページとパートの選択」の段からやり直してください。" }));
+    }
+  }
+
+  // 選んだあとも見られる、楽譜で見つかったパートの一覧（読むだけ）
+  function foundParts(d) {
+    var list = el("ul");
+    d.parts.forEach(function (p) { list.appendChild(el("li", { text: p.name + "（" + partNote(p) + "）" })); });
+    return el("details", { class: "found-parts" }, [el("summary", { text: "楽譜で見つかったパート" }), list]);
+  }
+
   // --- 一覧と詳細
 
   var AVAILABLE = {};
@@ -797,13 +945,13 @@
       var input = el("input", { type: "radio", name: "engine", value: name });
       if (!engines[name]) input.disabled = true;
       if (name === pick) input.checked = true;
-      var label = el("label", engines[name] ? {} : { title: name + " コマンドが見つかりません", style: "opacity:0.45;cursor:not-allowed" },
+      var label = el("label", engines[name] ? {} : { title: (ENGINE_LABELS[name] || name) + " が見つかりません。入れてログインしたあと、videotab を起動し直すと選べます", style: "opacity:0.45;cursor:not-allowed" },
         [input, el("span", { text: ENGINE_LABELS[name] || name })]);
       box.appendChild(label);
     });
     if (!usable.length) {
       $("go").disabled = true;
-      $("form-error").textContent = "Claude Code（claude）か Codex（codex）を入れてログインすると使えます。画像の読み取りにどちらかが必要です。";
+      $("form-error").textContent = "画像の読み取りには Claude Code か Codex（AI）が必要です。どちらかを入れてログインしたあと、videotab を起動し直してください。";
     }
   }
 
@@ -827,25 +975,36 @@
     var c = row.picker.check();
     if (!c.ok) { row.picker.showError(c.message); return; }
     // モデルと推論の強さは、普段の設定（null）も含めて常に明示して送る
-    api("/api/jobs/" + encodeURIComponent(selected) + "/retry", { step: step, engine: engine, model: c.value.model, effort: c.value.effort })
+    var body = { step: step, engine: engine, model: c.value.model, effort: c.value.effort };
+    // 楽譜の種類は動画の曲だけ送る。今の種類と違えば、サーバーが切り替えて帯と線の検出の段からやり直す
+    if (row.sourceMode) body.source_mode = row.sourceMode.value;
+    // パート欄が空なら paper を送らない（保存済みのパートのまま。選択待ちの曲は洗い出しからやり直す）。
+    // 画面のタブ譜としてやり直すときも送らない
+    var asPaper = row.paperPart && (!row.sourceMode || row.sourceMode.value === "paper");
+    var part = asPaper ? row.paperPart.value.trim() : "";
+    if (part) body.paper = { part: part, strings: Number(row.paperStrings.value) };
+    api("/api/jobs/" + encodeURIComponent(selected) + "/retry", body)
       .then(function () {
         remember(engine, c.value, false);  // やり直しの行はやり直しが成功したときに覚える
         retryChoice = {};
         return refresh();
-      }).catch(function (e) { alert(e.message); });
+      }).catch(function (e) { alert(errorText(e)); });
   }
 
   // #detail の中は、進み具合とタブ譜（変わったときだけ作り直す）に分ける。進み具合のうち、
-  // 見出し・段・報告・ログは更新のたびに作り直し、曲の情報とやり直しの行は同じ曲・同じ状態の間は保つ。
+  // 見出し・段・報告・ログは更新のたびに作り直し、パートを選ぶ区画・曲の情報・やり直しの行は
+  // 同じ曲・同じ状態の間は保つ。
   // 別の曲になったら（fresh）、進み具合の区画を新しく作り、前の曲の区画と一度に入れ替える
   function areas(fresh) {
     var box = $("detail");
     var progress = box.querySelector(":scope > .progress-area");
     if (!progress || fresh) {
       retryRow = null;
+      partRow = null;
       infoRow = null;
       var next = el("div", { class: "progress-area" }, [el("div", { class: "panel" }, [
-        el("div", { class: "p-top" }), el("div", { class: "p-edit" }), el("div", { class: "p-retry" }), el("div", { class: "p-bottom" })
+        el("div", { class: "p-top" }), el("div", { class: "p-parts" }), el("div", { class: "p-edit" }),
+        el("div", { class: "p-retry" }), el("div", { class: "p-bottom" })
       ])]);
       if (progress) {
         box.replaceChild(next, progress);
@@ -861,8 +1020,8 @@
       box.appendChild(result);
     }
     return {
-      top: progress.querySelector(".p-top"), edit: progress.querySelector(".p-edit"), retry: progress.querySelector(".p-retry"),
-      bottom: progress.querySelector(".p-bottom"), result: result
+      top: progress.querySelector(".p-top"), parts: progress.querySelector(".p-parts"), edit: progress.querySelector(".p-edit"),
+      retry: progress.querySelector(".p-retry"), bottom: progress.querySelector(".p-bottom"), result: result
     };
   }
 
@@ -903,6 +1062,7 @@
     dropPendingResult();
     shownResult = null;
     retryRow = null;
+    partRow = null;
     infoRow = null;
     $("detail").textContent = "";
     endSwitching();
@@ -920,10 +1080,10 @@
   function buildRetryRow(d, key) {
     var row = { key: key, job: d };
     var sel = el("select", { "aria-label": "やり直す段" });
-    d.steps.forEach(function (s) { sel.appendChild(el("option", { value: s.name, text: s.label })); });
-    // 初期選択は「読み取り」。中断した曲は、済んだ段をやり直さないよう最初の未完了の段にする
+    d.steps.forEach(function (s) { sel.appendChild(withHelp(el("option", { value: s.name, text: s.label }), s.label)); });
+    // 初期選択は「読み取り」。中断した曲とパートの選択待ちの曲は、済んだ段をやり直さないよう最初の未完了の段にする
     var readStep = d.steps.findIndex(function (s) { return s.name === "read"; });
-    var firstUndone = d.status === "stopped" ? d.steps.findIndex(function (s) { return s.status !== "done"; }) : -1;
+    var firstUndone = d.status === "stopped" || d.status === "waiting" ? d.steps.findIndex(function (s) { return s.status !== "done"; }) : -1;
     if (retryChoice.step) sel.value = retryChoice.step;
     else if (firstUndone >= 0) sel.selectedIndex = firstUndone;
     else if (readStep >= 0) sel.selectedIndex = readStep;
@@ -935,7 +1095,7 @@
     }
     goLabel();
     sel.addEventListener("change", function () { retryChoice.step = sel.value; goLabel(); });
-    var eng = el("select", { name: "engine", "aria-label": "読み取りに使うエージェント" });
+    var eng = el("select", { name: "engine", "aria-label": "読み取りに使う AI" });
     Object.keys(ENGINE_LABELS).forEach(function (k) {
       var o = el("option", { value: k, text: ENGINE_LABELS[k] + (AVAILABLE[k] === false ? "（見つかりません）" : "") });
       if (AVAILABLE[k] === false) o.disabled = true;
@@ -954,15 +1114,61 @@
       retryChoice.engine = eng.value;
       picker.setEngine(eng.value, retryInitial(eng.value));
     });
+    var goRow = el("div", { class: "retry-go-row" }, [go]);
     row.el = el("div", { class: "actions retry" }, [
       el("span", { class: "info-title", text: "やり直す" }),
       el("div", { class: "retry-main" }, [
         el("label", { class: "pick" }, [el("span", { text: "どの段から" }), sel]),
-        el("label", { class: "pick" }, [el("span", { text: "読み取りに使う AI" }), eng])
+        el("label", { class: "pick", title: ENGINE_HELP }, [el("span", { text: "読み取りに使う AI" }), eng])
       ]),
       el("div", { class: "pick-row" }, [picker.root]),
-      el("div", { class: "retry-go-row" }, [go])
+      goRow
     ]);
+    // 楽譜の種類（画面のタブ譜 / 紙の楽譜）は動画の曲だけに出す。帯と線の検出の段が見分けた結果が
+    // 違っていたときに、ここで変えてやり直す。写真・PDF・ZIP の曲はいつも紙の楽譜
+    var isVideo = d.source_kind !== "document";
+    if (isVideo || d.paper) {
+      var current = d.paper ? "paper" : "video";
+      var modeField = null;
+      if (isVideo) {
+        row.sourceMode = el("select", { "aria-label": "楽譜の種類" }, [
+          el("option", { value: "video", text: "画面のタブ譜" }), el("option", { value: "paper", text: "紙の楽譜" })
+        ]);
+        row.sourceMode.value = retryChoice.sourceMode || current;  // 今の値が初期値
+        modeField = el("label", { class: "pick" }, [el("span", { text: "楽譜の種類" }), row.sourceMode]);
+      }
+      // パートを選ぶ前の曲（part が null）と画面のタブ譜の曲では欄を空にする。空のまま送ると、洗い出しからやり直す
+      var unchosen = !d.paper || d.paper.part == null;
+      row.paperPart = el("input", { value: unchosen ? "" : d.paper.part, maxlength: "200", "aria-label": "書き起こすパート" });
+      if (unchosen) row.paperPart.setAttribute("placeholder", "空欄ならパートを探し直す");
+      row.paperStrings = stringsSelect();
+      if (d.paper) row.paperStrings.value = d.paper.strings === 4 ? "4" : "6";  // まだ決まっていなければ 6
+      var partField = el("label", { class: "pick" }, [el("span", { text: "パート" }), row.paperPart]);
+      var stringsField = el("label", { class: "pick" }, [el("span", { text: "弦数" }), row.paperStrings]);
+      var note = el("span", { class: "retry-note" });
+      // パート・弦数の欄は、楽譜の種類が紙の楽譜のときだけ出す
+      var syncPaperFields = function () {
+        var mode = row.sourceMode ? row.sourceMode.value : current;
+        var changed = mode !== current;
+        partField.hidden = stringsField.hidden = mode !== "paper";
+        if (changed) {
+          // 種類を変えると帯と線の検出の段からやり直すので、それより後の段を選んでいたら戻す
+          var stripStep = d.steps.findIndex(function (s) { return s.name === "strip"; });
+          if (stripStep >= 0 && sel.selectedIndex > stripStep) { sel.selectedIndex = stripStep; goLabel(); }
+        }
+        note.textContent = changed
+          ? "楽譜の種類を変えると、「帯と線の検出」（タブ譜の位置を探す段）からやり直します。" + (mode === "paper" ? "パートが空欄なら、楽譜にあるパートを探して一覧にします" : "")
+          : mode === "paper" ? "パート・弦数を変えると、「ページとパートの選択」からやり直します。" + (unchosen ? "空欄のままなら、楽譜にあるパートを探すところからやり直します" : "") : "";
+        note.hidden = !note.textContent;
+      };
+      if (row.sourceMode) row.sourceMode.addEventListener("change", function () { retryChoice.sourceMode = row.sourceMode.value; syncPaperFields(); });
+      syncPaperFields();
+      // 楽譜の種類・パート・弦数は「やり直す」ボタンで送る値なので、ボタンの前に置く（写真・PDF・ZIP の曲では
+      // modeField が無く、パートと弦数だけになる）
+      row.el.insertBefore(el("div", { class: "retry-main" }, [
+        modeField, partField, stringsField, note
+      ]), goRow);
+    }
     return row;
   }
 
@@ -982,7 +1188,7 @@
     }, function (e) {
       deletingId = null;
       if (e.status === 404) return gone();  // もう無い
-      alert(e.status ? e.message : "サーバーに届きません: " + e.message);
+      alert(errorText(e));
       return refresh();
     });
   }
@@ -998,14 +1204,14 @@
       return refresh();
     }, function (e) {
       cancelingId = null;
-      if (e.status !== 400) alert(e.status ? e.message : "サーバーに届きません: " + e.message);  // 400 はもう終わっていた
+      if (e.status !== 400) alert(errorText(e));  // 400 はもう終わっていた
       return refresh();
     });
   }
 
   function choiceText(d) {
     var c = d.choice || {};
-    return (c.model ? "・モデル " + c.model : "") + (c.effort ? "・推論の強さ " + c.effort : "");
+    return (c.model ? "・モデル " + c.model : "") + (c.effort ? "・推論の強さ " + effortText(c.effort) : "");
   }
 
   // old の k 行目から後ろが lines の頭と同じになる、いちばん小さい k（頭から外れた行の数）。
@@ -1051,6 +1257,8 @@
     var top = area.top, bottom = area.bottom;
     var logBox = bottom.querySelector("details.log-box");
     var notesWasOpen = bottom.querySelector("details.notes") ? bottom.querySelector("details.notes").open : false;
+    var previewsWasOpen = bottom.querySelector("details.paper-previews") ? bottom.querySelector("details.paper-previews").open : false;
+    var foundWasOpen = bottom.querySelector("details.found-parts") ? bottom.querySelector("details.found-parts").open : false;
     top.textContent = "";
     // ログの欄は残す（同じ曲の間は作り直さない）
     Array.prototype.slice.call(bottom.children).forEach(function (c) { if (c !== logBox) bottom.removeChild(c); });
@@ -1088,10 +1296,10 @@
     ]);
     var steps = el("ol", { class: "steps" });
     d.steps.forEach(function (s) {
-      var li = el("li", { class: s.status }, [
+      var li = withHelp(el("li", { class: s.status }, [
         el("span", { class: "n" }, [el("span", { class: "dot" }), s.label]),
         el("span", { class: "m", text: [duration(s), s.message].filter(Boolean).join("・") || (s.status === "pending" ? "まだ" : "") })
-      ]);
+      ]), s.label);
       if (s.status === "failed" && d.status !== "running" && d.status !== "queued") {
         li.appendChild(el("button", { type: "button", onclick: function () { retry(s.name); }, text: "ここからやり直す" }));
       }
@@ -1100,6 +1308,7 @@
     top.appendChild(head);
     top.appendChild(sub);
     top.appendChild(steps);
+    renderParts(area.parts, d);
     renderInfo(area.edit, d);
 
     // やり直しの行は、同じ曲・同じ状態の間は作り直さない（入力中の文字・フォーカス・開いた select を保つ）
@@ -1115,15 +1324,35 @@
     }
 
     var notesKeys = Object.keys(d.notes || {});
+    // 選んだあとも、楽譜で見つかったパートの一覧を見られるようにする（選択待ちの間は上の区画に出す）
+    if (!choosingPart(d) && d.parts && d.parts.length) {
+      var found = foundParts(d);
+      found.open = foundWasOpen;
+      bottom.insertBefore(found, logBox);
+    }
+    if (d.paper_previews && d.paper_previews.length) {
+      var previews = el("details", { class: "notes paper-previews" }, [el("summary", { text: "選んだパートと元ページを確認" })]);
+      previews.open = previewsWasOpen;
+      d.paper_previews.forEach(function (p) {
+        var row = el("p", {}, ["元ページ " + p.source_page + "・段 " + p.system + ": "]);
+        p.images.forEach(function (name, i) {
+          row.appendChild(el("a", { href: "/files/" + encodeURIComponent(d.id) + "/pages/" + encodeURIComponent(name), target: "_blank", rel: "noopener noreferrer",
+            text: i === 0 ? "元ページ" : "拡大 " + i }));
+          row.appendChild(document.createTextNode("　"));
+        });
+        previews.appendChild(row);
+      });
+      bottom.insertBefore(previews, logBox);
+    }
     if (notesKeys.length) {
-      var notes = el("details", { class: "notes" }, [el("summary", { text: "読み手の報告（自信のない所・曲の構成）" })]);
+      var notes = el("details", { class: "notes" }, [el("summary", { text: "AI の報告（自信のない所・曲の構成）" })]);
       notes.open = notesWasOpen;
       notesKeys.forEach(function (k) { notes.appendChild(noteBox(d, k)); });
       bottom.insertBefore(notes, logBox);  // ログの欄の上（まだ無ければ末尾）
     }
     if (!logBox) {
       var logPre = el("pre", { class: "log" });
-      logBox = el("details", { class: "log-box" }, [el("summary", { text: "ログ" }), logPre]);
+      logBox = el("details", { class: "log-box" }, [el("summary", { text: "作業の記録（ログ）" }), logPre]);
       logBox.open = d.status === "running";
       // 開いたときは、いちばん新しい行（末尾）を見せる
       logBox.addEventListener("toggle", function () { if (logBox.open) logPre.scrollTop = logPre.scrollHeight; });
@@ -1148,7 +1377,7 @@
         loadResult(area.result, el("div", { class: "panel result loading" }, [
           el("div", { class: "head" }, [
             el("h3", { text: "タブ譜" }),
-            el("a", { href: src, download: stem + ".html", title: "1 ファイルで、オフラインでも表示できる", text: "HTML をダウンロード" }),
+            el("a", { href: src, download: stem + ".html", title: "ブラウザで開ける 1 つのファイル。インターネットにつながっていなくても見られます", text: "楽譜をダウンロード（HTML）" }),
             el("a", { href: src, target: "_blank", rel: "noopener", text: "別のタブで開く" })
           ]),
           frame
@@ -1177,7 +1406,7 @@
     }, showRefreshError).then(schedule);
   }
   function showRefreshError(e) {
-    refreshError = (e.status ? "読み込めませんでした: " : "サーバーに届きません: ") + e.message;
+    refreshError = e.status ? "読み込めませんでした。ページを再読み込みしてください（" + e.message + "）" : errorText(e);
     $("form-error").textContent = refreshError;
   }
   function loadDetail(id) {
@@ -1198,6 +1427,7 @@
     shownResult = null;
     retryChoice = {};
     retryRow = null;
+    partRow = null;
     infoRow = null;
     infoNotice = null;
     dropPendingResult();
@@ -1218,6 +1448,7 @@
     current = null;
     retryChoice = {};
     retryRow = null;
+    partRow = null;
     infoRow = null;
     infoNotice = null;
     dropPendingResult();  // 前に選んだ曲の、読み込み待ちのタブ譜は捨てる（見えているパネルは残す）
@@ -1234,7 +1465,7 @@
 
   var VIDEO_EXTS = [".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi"];  // add.VIDEO_EXTS と同じ
   var MAX_BYTES = 4 * 1024 * 1024 * 1024;  // add.MAX_BYTES と同じ（4 GB）
-  var DROP_HINT = "動画ファイルをここにドロップ";
+  var DROP_HINT = "動画・写真・PDF・画像 ZIP をここにドロップ";
   var DROP_SUB = "またはクリックして選ぶ";
   var DROP_SUB_CHOSEN = "別のファイルを選ぶときはクリックかドロップ";
   var chosen = null;  // 送る動画ファイル
@@ -1246,7 +1477,11 @@
   function fileProblem(f) {
     var dot = f.name.lastIndexOf(".");
     var ext = dot > 0 ? f.name.slice(dot).toLowerCase() : "";
-    if (VIDEO_EXTS.indexOf(ext) < 0) return "動画ファイル（" + VIDEO_EXTS.join(" ") + "）を選んでください";
+    if ([".png", ".jpg", ".jpeg", ".pdf", ".zip"].indexOf(ext) >= 0) {
+      if (f.size <= 0 || f.size > 256 * 1024 * 1024) return "紙の楽譜のファイルは空でない 256 MB 以下にしてください";
+      return null;
+    }
+    if (VIDEO_EXTS.indexOf(ext) < 0) return "動画・写真（PNG・JPEG）・PDF・画像 ZIP を選んでください";
     if (f.size <= 0) return "動画が空です";
     if (f.size > MAX_BYTES) return "動画が大きすぎます（4 GB まで）";
     return null;
@@ -1256,6 +1491,9 @@
     $("drop-text").textContent = chosen ? chosen.name + "（" + sizeText(chosen.size) + "）" : DROP_HINT;
     $("drop-sub").textContent = chosen ? DROP_SUB_CHOSEN : DROP_SUB;
   }
+  // 楽譜の種類とパートは、ここでは聞かない。写真・PDF・ZIP はいつも紙の楽譜で、動画が画面のタブ譜か
+  // 紙を撮ったものかは、帯と線の検出の段が見分ける（違っていたら、詳細の「やり直す」で変える）。
+  // 紙の楽譜のパートは、いつも洗い出した一覧から選ぶ
   function choose(f) {
     if (!f || uploading) return;
     var problem = fileProblem(f);
@@ -1276,7 +1514,7 @@
   // 欄の外に落としても、ブラウザがページを動画に切り替えないようにする
   window.addEventListener("dragover", function (ev) { ev.preventDefault(); });
   window.addEventListener("drop", function (ev) { ev.preventDefault(); });
-  $("drop-note").textContent = VIDEO_EXTS.join(" ") + "、4 GB まで";
+  $("drop-note").textContent = "動画は 4 GB、写真・PDF・画像 ZIP は 256 MB まで。複数の写真は、ファイル名をページ順にして 1 つの ZIP に（Finder で選んで右クリック →「圧縮」）。";
   showChosen();
 
   function goEnabled() { return Object.keys(AVAILABLE).some(function (k) { return AVAILABLE[k]; }); }
@@ -1291,7 +1529,7 @@
   $("new").addEventListener("submit", function (ev) {
     ev.preventDefault();
     if (uploading) return;
-    if (!chosen) { $("form-error").textContent = "動画ファイルを選んでください"; return; }
+    if (!chosen) { $("form-error").textContent = "動画か楽譜のファイル（写真・PDF・画像 ZIP）を選んでください"; return; }
     var problem = fileProblem(chosen);
     if (problem) { $("form-error").textContent = problem; return; }
     var engine = checkedEngine();
@@ -1313,12 +1551,12 @@
       $("upload-bar").value = Math.round(e.loaded / e.total * 100);
       $("upload-text").textContent = "送信中 " + sizeText(e.loaded) + " / " + sizeText(e.total);
     };
-    xhr.upload.onload = function () { $("upload-text").textContent = "動画を確かめています…"; };
+    xhr.upload.onload = function () { $("upload-text").textContent = "ファイルを確かめています…"; };
     xhr.onload = function () {
       var d = null;
       try { d = JSON.parse(xhr.responseText); } catch (e) { d = null; }
       if (xhr.status !== 201 || !d || !d.id) {
-        uploadDone((d && d.error) || "送れませんでした（" + xhr.status + "）");
+        uploadDone((d && d.error) || "送れませんでした。少し待ってから、もう一度「タブ譜を作る」を押してください（エラー番号 " + xhr.status + "）");
         return;
       }
       uploadDone("");
@@ -1328,7 +1566,7 @@
       select(d.id);
     };
     // 本文を読む前に断られると、ブラウザには応答より先に通信の切断として見えることがある
-    xhr.onerror = function () { uploadDone("送れませんでした（サーバーに届かないか、途中で断られました。ファイルの形式と大きさを確かめてください）"); };
+    xhr.onerror = function () { uploadDone("送れませんでした。ファイルの形式と大きさ（動画は 4 GB、写真・PDF・画像 ZIP は 256 MB まで）を確かめてください。合っているなら、videotab を起動したターミナルが開いたままか確かめてください"); };
     xhr.onabort = function () { uploadDone("送信を中止しました"); };
     $("upload-bar").value = 0;
     $("upload-text").textContent = "送信を始めます…";

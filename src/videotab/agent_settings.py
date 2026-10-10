@@ -46,7 +46,7 @@ CHOICE_EFFORTS = {
 CLAUDE_EFFORT_ENV = "CLAUDE_CODE_EFFORT_LEVEL"
 
 FROM_FILE = "（普段の設定）"
-FROM_ENV = "（環境変数）"
+FROM_ENV = "（環境変数で指定）"
 FROM_CHOICE = "（videotab で指定）"
 
 
@@ -183,32 +183,55 @@ def apply_choice(settings: AgentSettings, choice: Choice | None) -> AgentSetting
 def validate(settings: AgentSettings, engine: str) -> None:
     """起動の直前の検査。エンジンが違う・値が検査に通らなければ ValueError。"""
     if not isinstance(settings, AgentSettings):
-        raise ValueError("読み取りの設定の形が違います")
+        raise ValueError("読み取りの設定（モデルと推論の強さ）の形が違います。もう一度やり直してください")
     if settings.engine != engine:
-        raise ValueError(f"読み取りの設定のエンジン（{settings.engine}）が起動するエンジン（{engine}）と違います")
+        raise ValueError(
+            f"読み取りの設定（{ENGINE_NAMES.get(settings.engine, settings.engine)} 用）と、読み取りに使う AI"
+            f"（{ENGINE_NAMES.get(engine, engine)}）が合いません。読み取りに使う AI を選び直して、やり直してください"
+        )
     if settings.chosen_model is not None and not valid_choice_model(engine, settings.chosen_model):
-        raise ValueError("選んだモデルが使えない値です")
+        raise ValueError(
+            "選んだモデルは使えない名前です。画面では「やり直す」の「モデル」で、コマンドでは --model で選び直してください"
+        )
     if settings.chosen_effort is not None and not valid_choice_effort(engine, settings.chosen_effort):
-        raise ValueError("選んだ推論の強さが使えない値です")
+        raise ValueError(
+            "選んだ推論の強さは、この AI では使えません。画面では「やり直す」の「推論の強さ」で、コマンドでは --effort で選び直してください"
+        )
     if settings.model is not None and not valid_model(settings.model):
-        raise ValueError("読み取りの設定のモデルが使えない値です")
+        name = ENGINE_NAMES.get(engine, engine)
+        raise ValueError(f"{name} の設定にあるモデルは使えない名前です。{name} の設定を直すか、videotab でモデルを選んでください")
     if settings.env_model is not None and not valid_model(settings.env_model):
-        raise ValueError("環境変数のモデルが使えない値です")
+        raise ValueError(
+            "環境変数 ANTHROPIC_MODEL のモデルは使えない名前です。環境変数を直すか、videotab でモデルを選んでください"
+        )
     if settings.env_effort is not None and not valid_claude_env_effort(settings.env_effort):
-        raise ValueError("環境変数の推論の強さが使えない値です")
+        raise ValueError(
+            f"環境変数 {CLAUDE_EFFORT_ENV} の推論の強さは使えない値です。環境変数を直すか、videotab で推論の強さを選んでください"
+        )
     efforts = settings.model_efforts
     if engine == "claude":
         if settings.effort is not None:
-            raise ValueError("Claude Code の推論の強さはモデルごとに渡します")
+            raise ValueError(
+                "Claude Code の推論の強さの渡し方が違います（モデルごとに渡します）。もう一度やり直してください"
+            )
         if not isinstance(efforts, dict) or len(efforts) > MAX_MODEL_SETTINGS:
-            raise ValueError("読み取りの設定のモデルごとの推論の強さが使えない形です")
+            raise ValueError(
+                "Claude Code の設定（modelSettings）のモデルごとの推論の強さが使えない形です。"
+                "Claude Code の設定を直すか、videotab で推論の強さを選んでください"
+            )
         if not all(valid_model(k) and valid_claude_effort(v) for k, v in efforts.items()):
-            raise ValueError("読み取りの設定のモデルごとの推論の強さに使えない値があります")
+            raise ValueError(
+                "Claude Code の設定（modelSettings）のモデルごとの推論の強さに使えない値があります。"
+                "Claude Code の設定を直すか、videotab で推論の強さを選んでください"
+            )
     else:
         if efforts:
-            raise ValueError("Codex にモデルごとの推論の強さは渡せません")
+            raise ValueError("Codex にはモデルごとの推論の強さを渡せません。もう一度やり直してください")
         if settings.effort is not None and not valid_codex_effort(settings.effort):
-            raise ValueError("読み取りの設定の推論の強さが使えない値です")
+            raise ValueError(
+                "Codex の設定（model_reasoning_effort）の推論の強さが使えない値です。"
+                "Codex の設定を直すか、videotab で推論の強さを選んでください"
+            )
 
 
 # --- 読み出し
@@ -417,11 +440,11 @@ def summary(settings: AgentSettings) -> str:
         if settings.chosen_model:
             model = f"モデル {settings.chosen_model}{FROM_CHOICE}"
         else:
-            model = f"モデル {settings.model}{FROM_FILE}" if settings.model else "モデル CLI の既定"
+            model = f"モデル {settings.model}{FROM_FILE}" if settings.model else "モデル Codex の標準"
         if settings.chosen_effort:
             effort = f"推論の強さ {settings.chosen_effort}{FROM_CHOICE}"
         else:
-            effort = f"推論の強さ {settings.effort}{FROM_FILE}" if settings.effort else "推論の強さ CLI の既定"
+            effort = f"推論の強さ {settings.effort}{FROM_FILE}" if settings.effort else "推論の強さ Codex の標準"
         return f"{model}・{effort}"
     if settings.chosen_model:
         model = f"モデル {settings.chosen_model}{FROM_CHOICE}"
@@ -430,7 +453,7 @@ def summary(settings: AgentSettings) -> str:
     elif settings.model:
         model = f"モデル {settings.model}{FROM_FILE}"
     else:
-        model = "モデル CLI の既定"
+        model = "モデル Claude Code の標準"
     if settings.chosen_effort:
         effort = f"推論の強さ {settings.chosen_effort}{FROM_CHOICE}"
     elif settings.env_effort_set:
@@ -438,7 +461,7 @@ def summary(settings: AgentSettings) -> str:
     elif settings.model_efforts:
         effort = "推論の強さはモデルごとの普段の設定"
     else:
-        effort = "推論の強さ モデルの既定"
+        effort = "推論の強さ モデルの標準"
     return f"{model}・{effort}"
 
 
@@ -456,7 +479,7 @@ def actual_text(settings: AgentSettings, model: str) -> str:
     elif model in settings.model_efforts:
         effort = f"推論の強さ {settings.model_efforts[model]}{FROM_FILE}"
     else:
-        effort = "推論の強さ モデルの既定"
+        effort = "推論の強さ モデルの標準"
     return f"実際のモデル {model}・{effort}"
 
 
@@ -464,27 +487,27 @@ def actual_text(settings: AgentSettings, model: str) -> str:
 
 
 def _usual_env(value: str | None) -> str:
-    return f"環境変数 {value}" if value else "環境変数"
+    return f"{value}・環境変数で指定" if value else "環境変数で指定"
 
 
 def usual_labels(settings: AgentSettings) -> dict[str, str]:
     """画面の「普段の設定（…）」の括弧に入れる文字列。検査に通った値だけを使う。"""
     if settings.engine == "codex":
-        return {"model": settings.model or "CLI の既定", "effort": settings.effort or "CLI の既定"}
+        return {"model": settings.model or "Codex の標準", "effort": settings.effort or "Codex の標準"}
     if settings.env_model_set:
         model = _usual_env(settings.env_model)
         usual_model = settings.env_model
     else:
-        model = settings.model or "CLI の既定"
+        model = settings.model or "Claude Code の標準"
         usual_model = settings.model
     # 普段のモデルと同じ名前のキーがあるときだけ値を出す（別名を含むキーからは推定しない）
     if settings.env_effort_set:
         effort = with_model = _usual_env(settings.env_effort)
     elif settings.model_efforts:
-        with_model = "モデルごと"
+        with_model = "モデルごとの設定"
         effort = settings.model_efforts.get(usual_model or "", with_model)
     else:
-        effort = with_model = "モデルの既定"
+        effort = with_model = "モデルの標準"
     return {"model": model, "effort": effort, "effort_with_model": with_model}
 
 

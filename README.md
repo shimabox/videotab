@@ -1,6 +1,6 @@
 # videotab
 
-手元の動画ファイルから、画面に写るタブ譜を 1 枚の楽譜（alphaTab の HTML＋alphaTex）に書き起こします。
+手元の動画ファイルや、紙の楽譜の写真・PDF から、タブ譜を書き起こします。できあがるのは、ブラウザで開いて表示・再生できる 1 枚の楽譜です。
 
 <table>
   <tr>
@@ -20,38 +20,44 @@
 ## できること
 
 - 動画ファイル（.mp4 .m4v .mov .webm .mkv .avi、4 GB まで）を画面から送るか、コマンドで渡すと、取り込みから楽譜の表示までを自動で進めます。
+- バンドスコアなど紙の楽譜を撮った動画・写真・PDF からも書き起こせます。楽譜にあるパートを AI が洗い出すので、書き起こすパートを一覧から選びます（6 弦ギター・4 弦ベース。[紙の楽譜から書き起こす](docs/paper.md)）。
 - 動画をネットから取ってくる機能はありません。書き起こしたい動画は、自分で用意したものを使います。
-- 画像からタブ譜を読むのは、手元でログイン済みのあなたの Claude Code か Codex です。API キーは使わず、その利用枠で動きます。
+- 画像からタブ譜を読むのは、あなたがログイン済みの Claude Code か Codex（ターミナルで動く AI）です。API キー（AI を使うための別契約の鍵）は使わず、いつもの利用枠で動きます。
 - できあがった楽譜は画面で表示・再生でき、HTML・Guitar Pro・MIDI などで持ち出せます。
 
 ## 用意するもの
 
-- 読み取りに使う AI: [Claude Code](https://claude.com/claude-code)（`claude`）か [Codex](https://github.com/openai/codex)（`codex`）。ログインまで済ませておく
-- **Mac**: Xcode Command Line Tools（`xcode-select --install`。`git` が入ります）と [Homebrew](https://brew.sh)（ffmpeg の導入に使います）
-- **Linux（Ubuntu / Debian）**: `sudo apt install -y ffmpeg make git curl`
+- **読み取りに使う AI**: [Claude Code](https://claude.com/claude-code)（`claude`）か [Codex](https://github.com/openai/codex)（`codex`）。ログインまで済ませておきます。
+- **Xcode Command Line Tools**: Mac で開発用の基本の道具（`git` や `make`）を入れるものです。ターミナルで `xcode-select --install` を実行します。
+- **[Homebrew](https://brew.sh)**: Mac にソフトを入れる道具です。ffmpeg（動画を画像に切り出すソフト）を入れるのに使います。
 
-ffmpeg には、取り込む動画を確かめる ffprobe も入っています。Python は不要です（セットアップで uv が用意します）。
+ffmpeg と uv（Python と必要な部品をそろえる道具）は、セットアップのときに無ければ、入れるかどうかを聞かれます。Python を自分で入れる必要はありません。
+
+Linux（Ubuntu / Debian）では、`sudo apt install -y ffmpeg make git curl` で用意します。
 
 ## セットアップと起動
 
-このリポジトリを手元に置き、そのフォルダで次を実行します。
+ターミナルで次を順に実行します。
 
 ```sh
-make setup   # uv・ffmpeg・ffprobe の確認と、依存関係の導入（何度実行しても構いません）
+git clone https://github.com/shimabox/videotab.git   # videotab を手元にダウンロード
+cd videotab                                          # ダウンロードしたフォルダに移る
+make setup   # 必要なものの確認と導入（何度実行しても構いません）
 make web     # 画面を起動（ブラウザで http://127.0.0.1:8765/ が開きます）
 ```
 
-- `make` が無い環境では `./setup.sh` → `uv run videotab serve` でも同じです。
-- `make setup` は [uv](https://docs.astral.sh/uv/) と ffmpeg を確かめ、無ければ導入を提案します（同意したときだけ入れます）。そのあと `uv sync --locked` で Python 3.11 と依存関係をそろえます。uv と ffmpeg を入れてあれば、`uv sync` だけでも同じです。
+- 画面を止めるときは、起動したターミナルで Ctrl+C を押します。次からは `cd videotab` のあと `make web` だけで起動できます。
+- `make` で command not found と出たら、`./setup.sh` → `uv run videotab serve` でも同じです。
+- `make setup` で行うことの詳細は [コマンド](docs/commands.md#セットアップで行うこと) にあります。
 
 ## 使い方
 
-1. 画面で動画ファイルを選ぶか、欄にドロップする。題名はファイル名から付く（題名・動画の作成者・元動画のページは、あとから曲の詳細の「曲の情報」で入れたり直したりできます）
-2. 「タブ譜を作る」を押す（読み取りに使う AI や、モデルと推論の強さも選べます）
-3. 取り込みから時刻の照合までの段が順に進むのを待つ（1 曲に数分〜十数分）
+1. 画面で動画ファイル（紙の楽譜なら写真・PDF・ZIP も）を選ぶか、欄にドロップする。題名はファイル名から付く（あとから曲の詳細の「曲の情報」で直せます）
+2. 「タブ譜を作る」を押す。読み取りに使う AI や、モデルと推論の強さ（AI がどれだけ時間をかけて考えるか。強いほど丁寧になりやすいが、遅く、利用枠も多く使う）も選べます
+3. 取り込みから時刻の照合までの段が順に進むのを待つ（1 曲に数分〜十数分）。紙の楽譜は途中で「パートの選択待ち」になるので、書き起こすパートを一覧から選ぶ
 4. できあがったタブ譜を画面で表示・再生し、必要ならダウンロードする
 
-画面は手元のマシンの中だけで動きます。途中で失敗した段は、その段だけやり直せます。
+画面はあなたのマシンの中だけで動き、ネットには公開されません。途中で失敗した段は、その段だけやり直せます。
 
 画面を使わずに、コマンドで通して実行することもできます。
 
@@ -63,7 +69,8 @@ uv run videotab run 動画.mp4      # または: make run VIDEO=動画.mp4
 
 | 文書 | 書いてあること |
 |---|---|
-| [画面の使い方](docs/usage.md) | 段の流れ、やり直し、読み取りの報告、曲の削除、ダウンロードの形式、画面なしの `videotab run` |
+| [画面の使い方](docs/usage.md) | 段の流れ、やり直し、AI の報告、曲の削除、ダウンロードの形式、画面なしの `videotab run` |
+| [紙の楽譜](docs/paper.md) | 写真・PDF・紙を撮った動画の取り込み、パートの選び方、動画の種類の見分け方、うまくいかないとき |
 | [読み取りのモデルと推論の強さ](docs/model-settings.md) | 曲ごとの選び方、普段の設定との関係、どの値で読んだかの確かめ方 |
 | [コマンド](docs/commands.md) | コマンドを 1 つずつ使う方法、コマンド一覧、作業フォルダの中身 |
 | [安全のしくみ](docs/safety.md) | 読み取りの AI に許していること・止めていること、ほかのファイルを書き換えないしくみ、アップロードと動画の扱い |
@@ -71,7 +78,7 @@ uv run videotab run 動画.mp4      # または: make run VIDEO=動画.mp4
 
 ## 既知の問題
 
-- **五線のスライド・ハンマリングの弧が消えることがある**: 2 音の和音にスライド（`{sl}`）やハンマリング（`{h}`）が付き、そのあとに音符が詰まって続く所では、楽譜の幅が狭いと五線の弧（スラー）が描かれないことがあります（タブ譜の弧は描かれます）。ブラウザのコンソールには `<path> attribute d: Expected number` のエラーが出ます。同梱の alphaTab 1.8.4 の不具合で、[alphaTab に報告済み](https://github.com/CoderLine/alphaTab/issues/2904)です。直った版が出たら同梱の alphaTab を上げます。それまでは、広い画面で開くと起きにくくなります。
+- **五線のスライド・ハンマリングの弧が消えることがある**: 2 音の和音にスライド（`{sl}`）やハンマリング（`{h}`）が付き、そのあとに音符が詰まって続く所では、楽譜の幅が狭いと五線の弧（スラー）が描かれないことがあります（タブ譜の弧は描かれます）。楽譜を描く部品 alphaTab（1.8.4）の不具合で、[alphaTab に報告済み](https://github.com/CoderLine/alphaTab/issues/2904)です。直った版が出たら差し替えます。それまでは、広い画面で開くと起きにくくなります（ブラウザの開発者ツールには `<path> attribute d: Expected number` のエラーが出ます）。
 
 ## 免責事項
 
@@ -82,8 +89,10 @@ uv run videotab run 動画.mp4      # または: make run VIDEO=動画.mp4
 
 ## 開発
 
+videotab 自体を改造する人向けです。決まりは [AGENTS.md](AGENTS.md) の「開発の決まり」にあります。
+
 ```sh
-make test             # または: uv run pytest
+make test             # テストを実行（または: uv run pytest）
 ```
 
 ## ライセンス
