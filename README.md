@@ -31,7 +31,7 @@
 - **Mac**: Xcode Command Line Tools（`xcode-select --install`。`git` が入ります）と [Homebrew](https://brew.sh)（ffmpeg の導入に使います）
 - **Linux（Ubuntu / Debian）**: `sudo apt install -y ffmpeg make git curl`
 
-ffmpeg には、取り込む動画を確かめる ffprobe も入っています。Python は不要です（セットアップで uv が用意します）。PDF の楽譜を使うときは Poppler も入れます（`brew install poppler` / `sudo apt install poppler-utils`）。
+ffmpeg には、取り込む動画を確かめる ffprobe も入っています。Python は不要です（セットアップで uv が用意します）。
 
 ## セットアップと起動
 

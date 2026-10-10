@@ -1483,7 +1483,7 @@
   // 欄の外に落としても、ブラウザがページを動画に切り替えないようにする
   window.addEventListener("dragover", function (ev) { ev.preventDefault(); });
   window.addEventListener("drop", function (ev) { ev.preventDefault(); });
-  $("drop-note").textContent = "動画は 4 GB、写真・PDF・画像 ZIP は 256 MB まで（複数の写真はページ順の ZIP に）。PDF は Poppler が必要です。";
+  $("drop-note").textContent = "動画は 4 GB、写真・PDF・画像 ZIP は 256 MB まで（複数の写真はページ順の ZIP に）。";
   showChosen();
 
   function goEnabled() { return Object.keys(AVAILABLE).some(function (k) { return AVAILABLE[k]; }); }

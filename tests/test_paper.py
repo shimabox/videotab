@@ -2,7 +2,12 @@
 
 import io
 import json
+import os
 import shlex
+import signal
+import subprocess
+import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -14,6 +19,7 @@ from videotab import build, cli, documents, pages, paper, pipeline, read, server
 from videotab.agent import AgentResult
 from videotab.agent_settings import Choice
 from videotab.workdir import list_frames, load_meta, read_json, save_meta
+from pdfs import image_pdf, locked_pdf, page_pdf
 from synth import write_frames
 
 
@@ -173,16 +179,95 @@ def test_document_import_has_pages_without_fake_performance_time(tmp_path, kind)
     assert not (tmp_path / "first.png").exists()
 
 
-def test_pdf_uses_local_renderer_and_retains_page_order(tmp_path, monkeypatch):
-    monkeypatch.setattr(documents.shutil, "which", lambda _: "/bin/pdftoppm")
-    def run(cmd, **kwargs):
-        assert "-scale-to" in cmd and "2400" in cmd
-        for n in (10, 2, 1):
-            Image.new("RGB", (30, 40), (n, n, n)).save(cmd[-1] + f"-{n}.png")
-        return type("Result", (), {"returncode": 0})()
-    monkeypatch.setattr(documents.subprocess, "run", run)
-    wd = documents.receive(io.BytesIO(b"pdf"), 3, "score.pdf", tmp_path / "work")
-    assert [Image.open(f.path).getpixel((0, 0))[0] for f in list_frames(wd)] == [1, 2, 10]
+def test_pdf_uses_local_renderer_and_retains_page_order(tmp_path):
+    data = image_pdf([1, 2, 10])
+    wd = documents.receive(io.BytesIO(data), len(data), "score.pdf", tmp_path / "work")
+    pages = [Image.open(f.path) for f in list_frames(wd)]
+    assert [im.getpixel((0, 0))[0] for im in pages] == [1, 2, 10]
+    assert [(im.mode, im.size) for im in pages] == [("RGB", (1800, 2400))] * 3
+    # 作業フォルダに残るのはページの画像と meta だけ。元の PDF と画像化の途中のファイルは残さない。
+    assert sorted(p.name for p in wd.iterdir()) == ["frames", "meta.json"]
+    assert sorted(p.name for p in (wd / "frames").iterdir()) == [f.path.name for f in list_frames(wd)]
+    assert [p for p in (tmp_path / "work").iterdir() if p.is_dir()] == [wd]
+
+
+def test_pdf_pages_stay_in_number_order_past_ten(tmp_path, monkeypatch):
+    monkeypatch.setattr(documents, "LONG_EDGE", 240)
+    data = image_pdf(range(1, 13))
+    wd = documents.receive(io.BytesIO(data), len(data), "score.pdf", tmp_path / "work")
+    pages = [Image.open(f.path) for f in list_frames(wd)]
+    assert [im.getpixel((0, 0))[0] for im in pages] == list(range(1, 13))
+    assert {im.size for im in pages} == {(180, 240)}
+
+
+def refused_pdf(root, data, match):
+    """PDF の取り込みが match の文で断られ、作業フォルダも一時フォルダも残らないことを確かめる。"""
+    with pytest.raises(ValueError, match=match):
+        documents.receive(io.BytesIO(data), len(data), "score.pdf", root)
+    assert not [p for p in root.iterdir() if p.is_dir()]
+
+
+def test_pdf_over_the_page_limit_does_not_leave_a_job(tmp_path, monkeypatch):
+    monkeypatch.setattr(documents, "MAX_PAGES", 2)
+    refused_pdf(tmp_path / "work", image_pdf([1, 2, 10]), "PDF は 2 ページまでにしてください")
+
+
+def test_encrypted_pdf_does_not_leave_a_job(tmp_path):
+    refused_pdf(tmp_path / "work", locked_pdf(), "この PDF は暗号化されています。パスワードを外してから")
+
+
+@pytest.mark.parametrize("kind", ["garbage", "png", "no pages"])
+def test_unreadable_pdf_does_not_leave_a_job(tmp_path, kind):
+    raw = io.BytesIO()
+    Image.new("RGB", (30, 40), "white").save(raw, "PNG")
+    data = {"garbage": b"%PDF-1.4 garbage", "png": raw.getvalue(), "no pages": page_pdf([])}[kind]
+    refused_pdf(tmp_path / "work", data, "PDF を画像化できませんでした$")
+
+
+def test_pdf_rendering_that_does_not_finish_is_stopped(tmp_path, monkeypatch):
+    # 眠り続ける本物の子プロセスに差し替える。待つのをやめるだけでなく、子を止めて回収していること。
+    children = []
+
+    class Recorded(subprocess.Popen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            children.append(self)
+
+    monkeypatch.setattr(subprocess, "Popen", Recorded)
+    monkeypatch.setattr(documents, "PDF_TIMEOUT", 0.5)
+    monkeypatch.setattr(documents, "_pdf_command",
+                        lambda *args: [sys.executable, "-c", "import time; time.sleep(600)"])
+    started = time.monotonic()
+    refused_pdf(tmp_path / "work", image_pdf([1]), "PDF の画像化が時間内に終わりませんでした")
+    assert time.monotonic() - started < 10
+    assert [child.returncode for child in children] == [-signal.SIGKILL]
+    with pytest.raises(ProcessLookupError):
+        os.kill(children[0].pid, 0)
+
+
+@pytest.mark.parametrize("code", [
+    "import os, signal; os.kill(os.getpid(), signal.SIGSEGV)",  # 描画の途中で落ちた
+    "raise RuntimeError('unexpected')",  # 予期しない例外
+    "import sys; sys.exit(5)",  # 決めていない終了コード
+    "import sys; sys.exit(0)",  # 成功と言いながらページが無い
+    "import sys; open(sys.argv[1] + '/page-1.png', 'wb').close(); sys.exit(3)",  # 途中まで書いて読めなくなった
+], ids=["segv", "exception", "unknown code", "no pages", "partial"])
+def test_pdf_renderer_that_fails_does_not_take_the_caller_down(tmp_path, monkeypatch, code):
+    with monkeypatch.context() as patched:
+        patched.setattr(documents, "_pdf_command",
+                        lambda path, out, max_pages, long_edge: [sys.executable, "-c", code, str(out)])
+        refused_pdf(tmp_path / "work", image_pdf([1]), "PDF を画像化できませんでした$")
+    # 落ちたのは子だけで、このプロセスは続けて次の PDF を取り込める。
+    data = image_pdf([7])
+    wd = documents.receive(io.BytesIO(data), len(data), "score.pdf", tmp_path / "work")
+    assert [Image.open(f.path).getpixel((0, 0))[0] for f in list_frames(wd)] == [7]
+
+
+def test_pdf_command_runs_the_renderer_in_another_process_without_loading_pdfium_here(tmp_path):
+    assert documents._pdf_command(tmp_path / "a.pdf", tmp_path, 200, 2400) == [
+        sys.executable, "-m", "videotab.pdfpages", str(tmp_path / "a.pdf"), str(tmp_path), "200", "2400"]
+    code = "import sys, videotab.cli, videotab.server; sys.exit('pypdfium2' in sys.modules)"
+    assert subprocess.run([sys.executable, "-c", code], capture_output=True, timeout=60).returncode == 0
 
 
 def test_bad_document_does_not_leave_a_job(tmp_path):

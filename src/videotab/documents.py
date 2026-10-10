@@ -5,17 +5,20 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from typing import BinaryIO
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from videotab import add, frames, inside
+from videotab import add, frames, inside, pdfpages
 from videotab.workdir import frame_name, list_frames, load_meta, save_meta
 
 EXTS = (*frames.IMAGE_EXTS, ".pdf", ".zip")
 MAX_PAGES = 200
+LONG_EDGE = 2400  # PDF のページを画像にするときの長辺（px）
+PDF_TIMEOUT = 120  # PDF の画像化を待つ秒数
 MAX_BYTES = 256 * 1024**2
 MAX_EXPANDED_BYTES = 1024**3
 
@@ -49,21 +52,24 @@ def _image(path: Path) -> Image.Image:
         raise ValueError(f"画像として読めません: {path.name}") from e
 
 
+def _pdf_command(path: Path, out: Path, max_pages: int, long_edge: int) -> list[str]:
+    return [sys.executable, "-m", "videotab.pdfpages", str(path), str(out), str(max_pages), str(long_edge)]
+
+
 def _pdf(path: Path, stage: inside.Folder) -> list[Path]:
-    binary = shutil.which("pdftoppm")
-    if not binary:
-        raise ValueError("PDF の取り込みには pdftoppm が必要です（macOS: brew install poppler）")
+    # PDF は別のプロセスで画像にする。壊れた PDF で描画が落ちても固まっても、ここへは終了コードだけが返る。
     try:
-        result = subprocess.run([binary, "-r", "150", "-scale-to", "2400", "-f", "1", "-l", str(MAX_PAGES + 1),
-                                 "-png", str(path), str(stage.path / "page")],
-                                capture_output=True, stdin=subprocess.DEVNULL, timeout=120)
+        result = subprocess.run(_pdf_command(path, stage.path, MAX_PAGES, LONG_EDGE),
+                                capture_output=True, stdin=subprocess.DEVNULL, timeout=PDF_TIMEOUT)
     except subprocess.TimeoutExpired:
         raise ValueError("PDF の画像化が時間内に終わりませんでした。ページを分けて取り込んでください") from None
-    files = sorted(stage.path.glob("page-*.png"), key=lambda p: int(p.stem.split("-")[-1]))
-    if result.returncode or not files:
-        raise ValueError("PDF を画像化できませんでした（暗号化された PDF は使えません）")
-    if len(files) > MAX_PAGES:
+    if result.returncode == pdfpages.ENCRYPTED:
+        raise ValueError("この PDF は暗号化されています。パスワードを外してから取り込んでください")
+    if result.returncode == pdfpages.TOO_MANY:
         raise ValueError(f"PDF は {MAX_PAGES} ページまでにしてください")
+    files = sorted(stage.path.glob("page-*.png"), key=lambda p: int(p.stem.split("-")[-1]))
+    if result.returncode != pdfpages.OK or not files:
+        raise ValueError("PDF を画像化できませんでした")
     return files
 
 
