@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from conftest import PROBED
+from PIL import Image
 
 from videotab import add, frames, inside
 from videotab.workdir import ID_PATTERN
@@ -210,6 +211,14 @@ def test_probe_command_limits_input_before_the_file(tmp_path, monkeypatch):
     assert i < len(cmd) - 1 and j < len(cmd) - 1
 
 
+def test_probe_command_asks_for_size_rotation_and_format(tmp_path, monkeypatch):
+    monkeypatch.setattr(add, "ffprobe_bin", lambda: "ffprobe")
+    cmd = add.probe_command(tmp_path / "video.part")
+    entries = cmd[cmd.index("-show_entries") + 1].split(":")
+    assert entries == ["stream=width,height", "stream_side_data=rotation", "stream_tags=rotate",
+                       "format=duration,format_name"]  # fmt: skip
+
+
 def test_extract_command_limits_input_before_dash_i(tmp_path):
     cmd = frames.extract_command("ffmpeg", tmp_path / "video.mp4", tmp_path / "raw_%05d.png", 1.0)
     k = cmd.index("-i")
@@ -239,6 +248,77 @@ def test_probe_checks_streams_and_format_name(tmp_path, monkeypatch):
             add.probe(tmp_path / name)
 
 
+# --- 回転の情報（縦撮りの動画）
+
+
+def fake_ffprobe(monkeypatch, stream, fmt=None, code=0):
+    """ffprobe の答えを偽物にする。映像は 1280x720 で、stream の項目を足す。"""
+    data = {
+        "streams": [{"width": 1280, "height": 720, **stream}],
+        "format": {"duration": "2.5", "format_name": "mov,mp4,m4a,3gp,3g2,mj2", **(fmt or {})},
+    }
+    monkeypatch.setattr(add, "ffprobe_bin", lambda: "ffprobe")
+    monkeypatch.setattr(
+        add.subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, code, json.dumps(data), "")
+    )
+
+
+@pytest.mark.parametrize("stream", [
+    {"side_data_list": [{"rotation": -90}]},
+    {"side_data_list": [{"rotation": 90}]},
+    {"side_data_list": [{"rotation": 270}]},
+    {"side_data_list": [{"side_data_type": "Other"}, {"rotation": -90}]},
+    {"tags": {"rotate": "90"}},
+    {"tags": {"rotate": "270"}},
+])  # fmt: skip
+def test_probe_swaps_size_for_quarter_turns(tmp_path, monkeypatch, stream):
+    fake_ffprobe(monkeypatch, stream)
+    assert add.probe(tmp_path / "v") == {"width": 720, "height": 1280, "duration": 2.5}
+
+
+@pytest.mark.parametrize("stream", [
+    {},
+    {"side_data_list": [{"rotation": 180}]},
+    {"side_data_list": [{"rotation": 0}]},
+    {"side_data_list": []},
+    {"side_data_list": None, "tags": None},
+    {"tags": {"rotate": "180"}},
+    {"tags": {"rotate": "0"}},
+    {"tags": {}},
+])  # fmt: skip
+def test_probe_keeps_size_for_other_rotations(tmp_path, monkeypatch, stream):
+    fake_ffprobe(monkeypatch, stream)
+    assert add.probe(tmp_path / "v") == {"width": 1280, "height": 720, "duration": 2.5}
+
+
+@pytest.mark.parametrize("stream", [
+    {"tags": {"rotate": "abc"}},
+    {"tags": {"rotate": "inf"}},
+    {"tags": {"rotate": "nan"}},
+    {"tags": {"rotate": None}},
+    {"side_data_list": [{"rotation": "abc"}]},
+    {"side_data_list": [{"rotation": "nan"}]},
+    {"side_data_list": [{"rotation": "-inf"}]},
+    {"side_data_list": [{"rotation": None}]},
+])  # fmt: skip
+def test_probe_ignores_unreadable_rotation(tmp_path, monkeypatch, stream):
+    # 読めない回転の情報では入れ替えず、取り込みも断らない
+    fake_ffprobe(monkeypatch, stream)
+    assert add.probe(tmp_path / "v") == {"width": 1280, "height": 720, "duration": 2.5}
+
+
+def test_probe_with_rotation_still_checks_duration_and_format_name(tmp_path, monkeypatch):
+    turned = {"side_data_list": [{"rotation": -90}]}
+    fake_ffprobe(monkeypatch, turned, {"duration": "N/A"})
+    assert add.probe(tmp_path / "v") == {"width": 720, "height": 1280, "duration": None}
+    fake_ffprobe(monkeypatch, turned, {"format_name": "concat"})
+    with pytest.raises(add.NotVideo):
+        add.probe(tmp_path / "v")
+    fake_ffprobe(monkeypatch, turned, code=1)
+    with pytest.raises(add.NotVideo):
+        add.probe(tmp_path / "v")
+
+
 # --- 実物の ffprobe / ffmpeg（無ければ飛ばす）
 
 needs_ffmpeg = pytest.mark.skipif(
@@ -262,6 +342,32 @@ def test_real_video_is_added_and_cut(tmp_path):
     meta = json.loads((wd / "meta.json").read_text(encoding="utf-8"))
     assert (meta["width"], meta["height"]) == (320, 240) and abs(meta["duration"] - 2.0) < 0.5
     assert frames.extract(wd) >= 2
+
+
+def make_rotated_video(path, degrees=90):
+    """回転の情報が付いた動画。回転なしで作った 320x240 の動画を、映像はそのままに包み直す。
+    包み直せない ffmpeg（-display_rotation に対応しない古い版など）では飛ばす。"""
+    plain = path.with_name("plain" + path.suffix)
+    make_real_video(plain)
+    wrapped = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-display_rotation", str(degrees),
+         "-i", str(plain), "-c", "copy", str(path)],
+        capture_output=True,
+    )  # fmt: skip
+    if wrapped.returncode != 0:
+        pytest.skip("この ffmpeg では回転の情報が付いた動画を作れません")
+
+
+@needs_ffmpeg
+def test_real_rotated_video_is_recorded_in_the_displayed_orientation(tmp_path):
+    src = tmp_path / "rotated.mp4"
+    make_rotated_video(src)
+    wd = add.add(src, tmp_path / "work")
+    meta = json.loads((wd / "meta.json").read_text(encoding="utf-8"))
+    assert (meta["width"], meta["height"]) == (240, 320)
+    assert frames.extract(wd) >= 2
+    with Image.open(sorted((wd / "frames").glob("*.png"))[0]) as first:
+        assert first.size == (240, 320) == (meta["width"], meta["height"])  # 切り出した画像と同じ向き
 
 
 class FifoWatch:
