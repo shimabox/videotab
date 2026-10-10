@@ -170,12 +170,20 @@ class App:
         title: str | None = None,
         creator: str | None = None,
         source_url: str | None = None,
+        paper_mode: bool = False,
+        part: str | None = None,
+        strings: int = 6,
     ) -> agent_settings.Choice:
         """動画の中身を読む前に確かめられることを確かめ、読み取りの選択を返す。合わなければ ValueError
         （add.NotVideo を含む）。model / effort は None で普段の設定。"""
         self._check_engine(engine)
         choice = agent_settings.normalize_choice(engine, model, effort)
-        add.check_request(name, length, title=title, creator=creator, source_url=source_url)
+        from videotab import documents, paper
+
+        checker = documents.check_request if Path(name).suffix.lower() in documents.EXTS else add.check_request
+        checker(name, length, title=title, creator=creator, source_url=source_url)
+        if paper_mode or checker is documents.check_request:
+            paper.options(part or paper.DEFAULT_PART, strings)
         return choice
 
     def receive(
@@ -190,6 +198,9 @@ class App:
         title: str | None = None,
         creator: str | None = None,
         source_url: str | None = None,
+        paper_mode: bool = False,
+        part: str | None = None,
+        strings: int = 6,
     ) -> str:
         """送られた動画（stream の length バイト）を新しい作業フォルダに取り込み、順番待ちに入れる。ID を返す。
 
@@ -197,14 +208,22 @@ class App:
         取り込みは self.lock を握らずに行い、job.json の作成と順番待ちへの登録だけを排他区間で行う。
         """
         fields = {"title": title, "creator": creator, "source_url": source_url}
-        choice = self.check_upload(name, length, engine, model, effort, **fields)
-        workdir = add.receive(stream, length, name, self.root, **fields)
+        from videotab import documents, paper
+
+        choice = self.check_upload(name, length, engine, model, effort, **fields,
+                                   paper_mode=paper_mode, part=part, strings=strings)
+        document = Path(name).suffix.lower() in documents.EXTS
+        receiver = documents.receive if document else add.receive
+        workdir = receiver(stream, length, name, self.root, **fields)
+        if paper_mode or document:
+            paper.configure(workdir, part or paper.DEFAULT_PART, strings)
         with self.lock:
             Job.create(workdir, engine, choice=choice)
             self._enqueue_locked(workdir.name)
         return workdir.name
 
-    def retry(self, job_id: str, step: str | None, engine: str | None, fields: dict | None = None) -> None:
+    def retry(self, job_id: str, step: str | None, engine: str | None, fields: dict | None = None,
+              paper_choice: dict | None = None) -> None:
         """やり直す。fields はリクエストにあった model / effort だけの表。
 
         キーが無い項目は引き継ぐ（エンジンが変わるときは普段の設定）。None は普段の設定、
@@ -214,6 +233,13 @@ class App:
         if step is not None and step not in STEP_NAMES:
             raise ValueError("step が違います")
         fields = fields or {}
+        selected = None
+        if paper_choice is not None:
+            from videotab import paper
+
+            if not isinstance(paper_choice, dict):
+                raise ValueError("紙の楽譜の指定が違います")
+            selected = paper.options(paper_choice.get("part"), paper_choice.get("strings"))
         with self.lock:  # 状態の確認・書き換え・登録を 1 つの排他区間で行う
             self._folder(job_id)  # 順番待ちに入る ID を、実際のフォルダ名と同じ綴りに限る
             job = Job(self.root / job_id)
@@ -236,6 +262,18 @@ class App:
                 choice = agent_settings.Choice(model, effort)
             if self._busy(job_id):
                 raise Busy("実行中か順番待ちです")
+            if selected is not None:
+                stored = load_meta(job.workdir).get("paper")
+                if not stored:
+                    raise ValueError("この曲は紙の楽譜ではありません")
+                if selected != stored:
+                    # パート変更では前のパートの拡大画像・読み取り結果を使い回さない。
+                    step = "strip"
+                    with job.hold():
+                        paper.configure(job.workdir, **selected)
+                        job.reset_from(step, engine, choice)
+                    self._enqueue_locked(job_id)
+                    return
             if step is None:
                 step = next((s["name"] for s in data["steps"] if s["status"] != "done"), "add")
             job.reset_from(step, engine, choice)
@@ -412,6 +450,27 @@ class App:
         else:
             for p in sorted((d / "readers").glob("notes_*.md")) if (d / "readers").exists() else []:
                 notes[p.stem.removeprefix("notes_")] = p.read_text(encoding="utf-8")
+        if (d / "paper" / "notes.md").exists() and isinstance(notes, dict):
+            notes["ページとパート"] = (d / "paper" / "notes.md").read_text(encoding="utf-8")
+        previews = []
+        pages_path = d / "pages" / "pages.json"
+        if meta.get("paper") and pages_path.exists():
+            try:
+                page_data = read_json(pages_path)
+                selected = meta.get("paper")
+                rows = page_data.get("pages", []) if isinstance(selected, dict) and all(
+                    page_data.get(k) == selected.get(k) for k in ("part", "strings")
+                ) else []
+                for row in rows[:200]:
+                    if not isinstance(row, dict):
+                        continue
+                    names = [row.get("context"), *(row.get("images") or [])]
+                    names = [name for name in names if isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_-]+\.png", name)]
+                    if names:
+                        previews.append({"page": row.get("page"), "source_page": row.get("source_page"),
+                                         "system": row.get("system"), "images": names})
+            except (ValueError, TypeError, AttributeError):
+                pass
         engine = data.get("engine") or DEFAULT_ENGINE
         status = self._live_status(job_id, data.get("status") or ("done" if html else "idle"))
         return {
@@ -425,6 +484,8 @@ class App:
             "rebuildable": rebuildable(data),
             "engine": engine,
             "choice": agent_settings.shown_choice(engine, data.get("choice")),
+            "paper": meta.get("paper"),
+            "paper_previews": previews,
             "status": status,
             "stopping": status == "running" and self._stopping(job_id),
             # job.json の label は作ったときの表示名なので、段の name から今の表示名にして出す
@@ -723,9 +784,13 @@ def make_handler(app: App):
                 return (query.get(key) or [None])[0] or None
 
             try:
+                mode = q("source_mode") or "video"
+                if mode not in ("video", "paper"):
+                    raise ValueError("楽譜の種類が違います")
+                paper_opts = {"paper_mode": True, "part": q("part"), "strings": int(q("strings") or "6")} if mode == "paper" else {}
                 job_id = app.receive(
                     self.rfile, length, q("name") or "", q("engine") or DEFAULT_ENGINE, q("model"), q("effort"),
-                    title=q("title"), creator=q("creator"), source_url=q("source_url"),
+                    title=q("title"), creator=q("creator"), source_url=q("source_url"), **paper_opts,
                 )  # fmt: skip
             except ValueError as e:  # 入力の項目の誤り（読む前）と、動画として読めない（add.NotVideo）
                 return self._error(400, str(e))
@@ -753,7 +818,10 @@ def make_handler(app: App):
                     app.cancel(job_id)
                 elif action == "retry":
                     fields = {k: body[k] for k in ("model", "effort") if k in body}
-                    app.retry(job_id, body.get("step"), body.get("engine"), fields)
+                    if "paper" in body:
+                        app.retry(job_id, body.get("step"), body.get("engine"), fields, paper_choice=body["paper"])
+                    else:
+                        app.retry(job_id, body.get("step"), body.get("engine"), fields)
                 elif action == "info":
                     # 欠けた項目を空として扱うと、一部だけの本文で値が消えるので、すべて求める
                     missing = [k for k in INFO_KEYS if k not in body]

@@ -85,6 +85,7 @@
   }
   form.new .upload { display: flex; gap: 10px; align-items: center; font-size: 0.85rem; color: var(--muted); }
   form.new .upload[hidden] { display: none; }
+  .pick[hidden], #paper-hint[hidden] { display: none; }
   form.new .upload progress { flex: 1 1 auto; max-width: 420px; }
   .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
   .seg label { padding: 9px 12px; cursor: pointer; font-size: 0.88rem; color: var(--muted); }
@@ -280,12 +281,12 @@
 <header class="top">
   <h1>videotab</h1>
   <span class="version">v__VERSION__</span>
-  <p>手元の動画ファイルから、画面に写るタブ譜を 1 枚の楽譜に書き起こします</p>
+  <p>手元の動画や紙の楽譜の写真から、タブ譜を 1 枚の楽譜に書き起こします</p>
 </header>
 <main>
   <form class="new" id="new">
     <label class="drop" id="drop">
-      <input type="file" id="file" accept=".mp4,.m4v,.mov,.webm,.mkv,.avi" aria-label="動画ファイル">
+      <input type="file" id="file" accept=".mp4,.m4v,.mov,.webm,.mkv,.avi,.png,.jpg,.jpeg,.pdf,.zip" aria-label="動画・写真・PDF・画像 ZIP">
       <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
         <path d="M12 15V4"/><path d="M7.5 8.5 12 4l4.5 4.5"/><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/>
@@ -294,6 +295,18 @@
       <span class="drop-sub" id="drop-sub"></span>
       <span class="drop-note" id="drop-note"></span>
     </label>
+    <div class="pick-row">
+      <label class="pick"><span>楽譜の種類</span><select id="source-mode">
+        <option value="video">画面のタブ譜</option><option value="paper">紙の楽譜</option>
+      </select></label>
+      <label class="pick" id="paper-part-row" hidden><span>パート</span>
+        <input id="paper-part" value="Guitar I" maxlength="200" placeholder="例: Guitar II、Bass" aria-label="書き起こすパート">
+      </label>
+      <label class="pick" id="paper-strings-row" hidden><span>弦数</span><select id="paper-strings">
+        <option value="6">6 弦（ギター）</option><option value="4">4 弦（ベース）</option>
+      </select></label>
+    </div>
+    <p id="paper-hint" hidden>紙の楽譜は、書き起こすパート名と弦数を指定してください。複数の写真はページ順に並べた ZIP でも取り込めます。</p>
     <div class="pick-row">
       <div class="pick engine-pick"><span>読み取り</span>
         <div class="seg" role="radiogroup" aria-label="読み取りに使うエージェント" id="engines"></div>
@@ -827,7 +840,9 @@
     var c = row.picker.check();
     if (!c.ok) { row.picker.showError(c.message); return; }
     // モデルと推論の強さは、普段の設定（null）も含めて常に明示して送る
-    api("/api/jobs/" + encodeURIComponent(selected) + "/retry", { step: step, engine: engine, model: c.value.model, effort: c.value.effort })
+    var body = { step: step, engine: engine, model: c.value.model, effort: c.value.effort };
+    if (row.paperPart) body.paper = { part: row.paperPart.value.trim(), strings: Number(row.paperStrings.value) };
+    api("/api/jobs/" + encodeURIComponent(selected) + "/retry", body)
       .then(function () {
         remember(engine, c.value, false);  // やり直しの行はやり直しが成功したときに覚える
         retryChoice = {};
@@ -963,6 +978,16 @@
       el("div", { class: "pick-row" }, [picker.root]),
       el("div", { class: "retry-go-row" }, [go])
     ]);
+    if (d.paper) {
+      row.paperPart = el("input", { value: d.paper.part, maxlength: "200", "aria-label": "書き起こすパート" });
+      row.paperStrings = el("select", { "aria-label": "弦数" }, [el("option", { value: "6", text: "6 弦" }), el("option", { value: "4", text: "4 弦" })]);
+      row.paperStrings.value = String(d.paper.strings);
+      row.el.appendChild(el("div", { class: "retry-main" }, [
+        el("label", { class: "pick" }, [el("span", { text: "パート" }), row.paperPart]),
+        el("label", { class: "pick" }, [el("span", { text: "弦数" }), row.paperStrings]),
+        el("span", { text: "パート・弦数を変えるとページ選択からやり直します。" })
+      ]));
+    }
     return row;
   }
 
@@ -1051,6 +1076,7 @@
     var top = area.top, bottom = area.bottom;
     var logBox = bottom.querySelector("details.log-box");
     var notesWasOpen = bottom.querySelector("details.notes") ? bottom.querySelector("details.notes").open : false;
+    var previewsWasOpen = bottom.querySelector("details.paper-previews") ? bottom.querySelector("details.paper-previews").open : false;
     top.textContent = "";
     // ログの欄は残す（同じ曲の間は作り直さない）
     Array.prototype.slice.call(bottom.children).forEach(function (c) { if (c !== logBox) bottom.removeChild(c); });
@@ -1115,6 +1141,20 @@
     }
 
     var notesKeys = Object.keys(d.notes || {});
+    if (d.paper_previews && d.paper_previews.length) {
+      var previews = el("details", { class: "notes paper-previews" }, [el("summary", { text: "選んだパートと元ページを確認" })]);
+      previews.open = previewsWasOpen;
+      d.paper_previews.forEach(function (p) {
+        var row = el("p", {}, ["元ページ " + p.source_page + "・段 " + p.system + ": "]);
+        p.images.forEach(function (name, i) {
+          row.appendChild(el("a", { href: "/files/" + encodeURIComponent(d.id) + "/pages/" + encodeURIComponent(name), target: "_blank", rel: "noopener noreferrer",
+            text: i === 0 ? "元ページ" : "拡大 " + i }));
+          row.appendChild(document.createTextNode("　"));
+        });
+        previews.appendChild(row);
+      });
+      bottom.insertBefore(previews, logBox);
+    }
     if (notesKeys.length) {
       var notes = el("details", { class: "notes" }, [el("summary", { text: "読み手の報告（自信のない所・曲の構成）" })]);
       notes.open = notesWasOpen;
@@ -1234,7 +1274,7 @@
 
   var VIDEO_EXTS = [".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi"];  // add.VIDEO_EXTS と同じ
   var MAX_BYTES = 4 * 1024 * 1024 * 1024;  // add.MAX_BYTES と同じ（4 GB）
-  var DROP_HINT = "動画ファイルをここにドロップ";
+  var DROP_HINT = "動画・写真・PDF・画像 ZIP をここにドロップ";
   var DROP_SUB = "またはクリックして選ぶ";
   var DROP_SUB_CHOSEN = "別のファイルを選ぶときはクリックかドロップ";
   var chosen = null;  // 送る動画ファイル
@@ -1246,7 +1286,11 @@
   function fileProblem(f) {
     var dot = f.name.lastIndexOf(".");
     var ext = dot > 0 ? f.name.slice(dot).toLowerCase() : "";
-    if (VIDEO_EXTS.indexOf(ext) < 0) return "動画ファイル（" + VIDEO_EXTS.join(" ") + "）を選んでください";
+    if ([".png", ".jpg", ".jpeg", ".pdf", ".zip"].indexOf(ext) >= 0) {
+      if (f.size <= 0 || f.size > 256 * 1024 * 1024) return "紙の楽譜のファイルは空でない 256 MB 以下にしてください";
+      return null;
+    }
+    if (VIDEO_EXTS.indexOf(ext) < 0) return "動画・写真（PNG・JPEG）・PDF・画像 ZIP を選んでください";
     if (f.size <= 0) return "動画が空です";
     if (f.size > MAX_BYTES) return "動画が大きすぎます（4 GB まで）";
     return null;
@@ -1256,12 +1300,22 @@
     $("drop-text").textContent = chosen ? chosen.name + "（" + sizeText(chosen.size) + "）" : DROP_HINT;
     $("drop-sub").textContent = chosen ? DROP_SUB_CHOSEN : DROP_SUB;
   }
+  function isDocument(f) { return !!f && /\.(png|jpe?g|pdf|zip)$/i.test(f.name); }
+  function showPaperFields() {
+    if (isDocument(chosen)) $("source-mode").value = "paper";
+    var paper = $("source-mode").value === "paper";
+    $("paper-part-row").hidden = !paper;
+    $("paper-strings-row").hidden = !paper;
+    $("paper-hint").hidden = !paper;
+  }
+  $("source-mode").addEventListener("change", showPaperFields);
   function choose(f) {
     if (!f || uploading) return;
     var problem = fileProblem(f);
     $("form-error").textContent = problem || "";
     if (problem) return;
     chosen = f;
+    showPaperFields();
     showChosen();
   }
   $("file").addEventListener("change", function () { choose($("file").files[0]); $("file").value = ""; });
@@ -1276,7 +1330,7 @@
   // 欄の外に落としても、ブラウザがページを動画に切り替えないようにする
   window.addEventListener("dragover", function (ev) { ev.preventDefault(); });
   window.addEventListener("drop", function (ev) { ev.preventDefault(); });
-  $("drop-note").textContent = VIDEO_EXTS.join(" ") + "、4 GB まで";
+  $("drop-note").textContent = "動画は 4 GB、写真・PDF・画像 ZIP は 256 MB まで。PDF は Poppler が必要です。";
   showChosen();
 
   function goEnabled() { return Object.keys(AVAILABLE).some(function (k) { return AVAILABLE[k]; }); }
@@ -1295,6 +1349,9 @@
     var problem = fileProblem(chosen);
     if (problem) { $("form-error").textContent = problem; return; }
     var engine = checkedEngine();
+    showPaperFields();
+    var paperMode = $("source-mode").value === "paper";
+    if (paperMode && !$("paper-part").value.trim()) { $("form-error").textContent = "書き起こすパート名を入れてください"; return; }
     var c = newPicker ? newPicker.check() : { ok: true, value: { model: null, effort: null } };
     if (!c.ok) { newPicker.showError(c.message); return; }
     $("go").disabled = true;
@@ -1302,6 +1359,11 @@
     var params = new URLSearchParams();
     // 題名はサーバーがファイル名から付ける。題名・作成者・元動画のページは、曲の詳細の「曲の情報」で直せる
     var fields = { name: chosen.name, engine: engine, model: c.value.model, effort: c.value.effort };
+    if (paperMode) {
+      fields.source_mode = "paper";
+      fields.part = $("paper-part").value.trim();
+      fields.strings = $("paper-strings").value;
+    }
     Object.keys(fields).forEach(function (k) { if (fields[k]) params.set(k, fields[k]); });
     var file = chosen;
     var xhr = new XMLHttpRequest();
@@ -1313,7 +1375,7 @@
       $("upload-bar").value = Math.round(e.loaded / e.total * 100);
       $("upload-text").textContent = "送信中 " + sizeText(e.loaded) + " / " + sizeText(e.total);
     };
-    xhr.upload.onload = function () { $("upload-text").textContent = "動画を確かめています…"; };
+    xhr.upload.onload = function () { $("upload-text").textContent = "ファイルを確かめています…"; };
     xhr.onload = function () {
       var d = null;
       try { d = JSON.parse(xhr.responseText); } catch (e) { d = null; }

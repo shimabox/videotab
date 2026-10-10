@@ -39,6 +39,7 @@ STEPS = [
 ]
 STEP_NAMES = [name for name, _ in STEPS]
 STEP_LABELS = dict(STEPS)
+PAPER_LABELS = {"add": "楽譜の取り込み", "strip": "ページとパートの選択", "pages": "段の補正と拡大", "verify": "検査結果の確認"}
 REBUILD_FROM = "build"  # 曲の情報を書き換えたとき、組み立て直す最初の段（ここから後はエージェントを使わない）
 
 _file_lock = threading.Lock()
@@ -82,7 +83,8 @@ def shown_steps(data: dict) -> list:
     steps = data.get("steps") or []
     if not isinstance(steps, list):
         return steps
-    return [{**s, "label": step_label(s)} if isinstance(s, dict) else s for s in steps]
+    return [{**s, "label": PAPER_LABELS.get(s.get("name"), step_label(s)) if data.get("source_mode") == "paper"
+             else step_label(s)} if isinstance(s, dict) else s for s in steps]
 
 
 def has_steps(data: dict) -> bool:
@@ -192,6 +194,8 @@ class Job:
             "steps": [{"name": n, "label": lb, "status": "pending"} for n, lb in STEPS],
         }
         _set_choice(data, choice)
+        if load_meta(workdir).get("paper"):
+            data["source_mode"] = "paper"
         job.save(data)
         return job
 
@@ -454,6 +458,13 @@ class Job:
             self._cli("frames", wd, "--force")
             return f"{len(list(frames.iterdir()))} 枚"
         if name == "strip":
+            if load_meta(self.workdir).get("paper"):
+                from videotab import paper
+
+                self._change(lambda d: d.update(source_mode="paper"))
+                settings = self._settings(engine)
+                selected = paper.analyze(self.workdir, engine, self.log, settings=settings, cancel=self.cancel)
+                return f"{len(selected['pages'])} ページから指定パートを選びました"
             strip = load_meta(self.workdir).get("strip") or {}
             band = ["--band", *map(str, strip["band"])] if strip.get("band_given") else []
             try:
@@ -472,18 +483,7 @@ class Job:
             from videotab.read import read_all
 
             # 曲ごとの選択は job.json から読み、検査し直す。使えなければエージェントを起動しない
-            try:
-                choice = agent_settings.choice_from_job(engine, self._current().get("choice"))
-            except ValueError as e:
-                raise StepError(
-                    f"読み取りのモデルと推論の強さの指定が使えません（{e}）。「やり直す」で選び直してください"
-                ) from None
-            # 普段の設定は、段の開始時にその回のエンジンのユーザー設定から 1 回だけ読む
-            # （job.json には残さないので、やり直すとその時点の設定になる）
-            settings = agent_settings.apply_choice(agent_settings.load_settings(engine), choice)
-            for note in [*settings.notes, *agent_settings.removed_env_notes(settings)]:
-                self.log(note)
-            self.log(agent_settings.start_line(settings))
+            settings = self._settings(engine)
             shown = [agent_settings.summary(settings)]
             self.update_step(name, message=shown[0])
             lock = threading.Lock()
@@ -502,6 +502,8 @@ class Job:
             self._cli("build", wd)
             return None
         if name == "verify":
+            if self._current().get("source_mode") == "paper" or load_meta(self.workdir).get("paper"):
+                return "小節と拍の検査済み。紙の楽譜は演奏時刻を持たないため、時刻照合は対象外です"
             marks_path = self.workdir / "marks.json"
             has_marks = marks_path.exists() and bool(read_json(marks_path))
             try:
@@ -513,6 +515,20 @@ class Job:
                 return "照合していません（動画の時刻の印がありません）"
             return "動画の時刻と合っています"
         raise ValueError(name)
+
+    def _settings(self, engine: str):
+        """ページ選択と読み取りに、同じ曲のモデル・推論の指定を適用する。"""
+        try:
+            choice = agent_settings.choice_from_job(engine, self._current().get("choice"))
+        except ValueError as e:
+            raise StepError(
+                f"読み取りのモデルと推論の強さの指定が使えません（{e}）。「やり直す」で選び直してください"
+            ) from None
+        settings = agent_settings.apply_choice(agent_settings.load_settings(engine), choice)
+        for note in [*settings.notes, *agent_settings.removed_env_notes(settings)]:
+            self.log(note)
+        self.log(agent_settings.start_line(settings))
+        return settings
 
     def _check_video(self) -> str:
         """add の段: 取り込んだ動画があるかを確かめる（取り込みは受け付けたときに済んでいる）。

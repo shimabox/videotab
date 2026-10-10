@@ -4,6 +4,9 @@
 
 ## コマンドを 1 つずつ使う
 
+紙の楽譜の動画・写真・PDF・画像 ZIP は、[紙の楽譜から書き起こす](paper.md)を参照してください。
+`run`・`add` の `--paper`・`--part`・`--strings` と、候補だけを作る `paper` コマンドを使えます。
+
 ```sh
 uv run videotab add 動画.mp4                  # 新しい作業フォルダ work/XXXX/ に取り込み、ID（XXXX）を表示
 uv run videotab frames XXXX                   # 1 秒 1 枚の画像に

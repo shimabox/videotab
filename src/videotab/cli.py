@@ -68,6 +68,26 @@ def _add_video(src: Path, args) -> Path:
         raise SystemExit(str(e)) from None
 
 
+def _add_input(src: Path, args) -> Path:
+    from videotab import documents, paper
+
+    try:
+        opts = paper.options(args.part or paper.DEFAULT_PART, args.strings or 6)
+        if src.is_dir() or src.suffix.lower() in documents.EXTS:
+            wd = documents.import_source(src, Path(args.root), title=args.title, creator=args.creator,
+                                         source_url=args.source_url)
+            paper.configure(wd, **opts)
+            return wd
+        if not args.paper and (args.part is not None or args.strings is not None):
+            raise ValueError("動画の --part・--strings は --paper と一緒に指定してください")
+        wd = _add_video(src, args)
+        if args.paper:
+            paper.configure(wd, **opts)
+        return wd
+    except ValueError as e:
+        raise SystemExit(str(e)) from None
+
+
 def _resume_command(job_id: str, root: Path) -> str:
     """途中で止まった曲を同じ作業フォルダで続けるコマンド。既定の置き場（work/）なら --root を付けない。"""
     words = ["videotab", "run", job_id]
@@ -83,7 +103,8 @@ def cmd_run(args) -> int:
     from videotab.workdir import ID_PATTERN
 
     root = Path(args.root).resolve()
-    existing = root / args.target if ID_PATTERN.fullmatch(args.target) else None
+    target_path = Path(args.target)
+    existing = target_path if target_path.is_dir() else root / args.target if ID_PATTERN.fullmatch(args.target) else None
     known = existing is not None and ((existing / "meta.json").exists() or (existing / "job.json").exists())
     if known:
         given = [opt for opt, v in (("--title", args.title), ("--creator", args.creator),
@@ -92,12 +113,12 @@ def cmd_run(args) -> int:
             raise SystemExit(f"{'・'.join(given)} は動画ファイルを新しく取り込むときだけ指定できます"
                              f"（{args.target} は取り込み済みの曲です）")  # fmt: skip
         workdir = existing
-    elif Path(args.target).is_file():
+    elif Path(args.target).exists():
         if args.step:
             raise SystemExit("--step は既存の作業フォルダの ID と一緒に指定してください（新しい動画は最初の段から実行します）")
         # 指定の誤りで取り込み済みのフォルダを残さないよう、取り込む前に検査する
         engine, choice = _run_choice(args, {})
-        workdir = _add_video(Path(args.target), args)
+        workdir = _add_input(Path(args.target), args)
         print(f"取り込みました: {workdir}（ID: {workdir.name}）", flush=True)
     else:
         raise SystemExit("動画ファイルか、既存の作業フォルダの ID を指定してください")
@@ -113,6 +134,21 @@ def cmd_run(args) -> int:
             Job.create(workdir, engine, choice=choice)
         else:
             data = job.load()
+            if args.paper or args.part is not None or args.strings is not None:
+                from videotab import paper
+
+                stored = load_meta(workdir).get("paper") or {}
+                try:
+                    opts = paper.options(args.part or stored.get("part") or paper.DEFAULT_PART,
+                                         args.strings or stored.get("strings") or 6)
+                except ValueError as e:
+                    raise SystemExit(str(e)) from None
+                if opts != stored:
+                    _run_choice(args, data)  # パートを保存する前にもモデル・推論の指定を確かめる
+                    if args.step and STEP_NAMES.index(args.step) > STEP_NAMES.index("strip"):
+                        raise SystemExit("パート・弦数を変えるときは --step strip からやり直してください")
+                    paper.configure(workdir, **opts)
+                    args.step = args.step or "strip"
             if data and not args.step and data.get("status") == "done":
                 print(f"できあがっています: {workdir / (workdir.name + '.html')}（作り直すなら --step で段を指定）")
                 return 0
@@ -148,17 +184,20 @@ def cmd_run(args) -> int:
         return 0
     print(f"途中で止まりました（{job.path} と {job.log_path}）")
     # 動画ファイルをもう一度渡すと別の曲になるので、続きは ID で指す
-    print(f"続きは {_resume_command(workdir.name, root)}")
+    print(f"続きは {_resume_command(workdir.name, workdir.resolve().parent)}")
     return 1
 
 
 def cmd_add(args) -> int:
-    workdir = _add_video(Path(args.file), args)
+    workdir = _add_input(Path(args.file), args)
     meta = load_meta(workdir)
     print(f"{workdir}  {meta.get('title', '')}")
     print(f"ID: {workdir.name}")
     # 作業フォルダのパスで指せば、--root を付けなくても同じ作業フォルダで続けられる
-    print(f"次: videotab frames {shlex.quote(str(workdir))}")
+    if meta.get("source_kind") == "document":
+        print(f"次: {_resume_command(workdir.name, workdir.resolve().parent)} --step strip")
+    else:
+        print(f"次: videotab frames {shlex.quote(str(workdir))}")
     return 0
 
 
@@ -231,6 +270,15 @@ def cmd_strip(args) -> int:
 
     workdir = resolve_target(args.target)
     frames = _frames_or_exit(workdir)
+    if load_meta(workdir).get("paper"):
+        from videotab.paper import validate_layout
+        from videotab.workdir import read_json
+
+        if not (workdir / "paper" / "layout.json").exists():
+            raise SystemExit("紙の楽譜のページとパートを先に選んでください（videotab run ID --step strip）")
+        validate_layout(read_json(workdir / "paper" / "layout.json"), frames)
+        print("紙の楽譜の領域を確認しました。次: videotab pages " + str(workdir))
+        return 0
     try:
         result = strip.detect(frames, band=tuple(args.band) if args.band else None)
     except strip.NoTabFound as e:
@@ -285,6 +333,12 @@ def cmd_pages(args) -> int:
     from videotab import pages
 
     workdir = resolve_target(args.target)
+    if load_meta(workdir).get("paper"):
+        from videotab import paper
+
+        paper.write_pages(workdir)
+        print(f"紙の楽譜の拡大画像 → {workdir / 'pages' / 'index.md'}")
+        return 0
     frames = _frames_or_exit(workdir)
     setup = pages.Setup.from_meta(load_meta(workdir), frames)
     det = pages.detect_pages(frames, setup, threshold=args.threshold)
@@ -305,11 +359,17 @@ def cmd_zoom(args) -> int:
     with confine.short_errors():
         workdir = _reader_target(args.target) or resolve_target(args.target)
         frames = list_frames(workdir)
-        setup = pages.Setup.from_meta(load_meta(workdir), frames)
         frame = next((f for f in frames if f.index == args.frame), None)
         if frame is None:
             raise SystemExit(f"フレーム {args.frame} がありません")
-        for p in pages.zoom_frame(workdir, frame, setup):
+        if load_meta(workdir).get("paper"):
+            from videotab import paper
+
+            images = paper.write_pages(workdir, zoom=frame)
+        else:
+            setup = pages.Setup.from_meta(load_meta(workdir), frames)
+            images = pages.zoom_frame(workdir, frame, setup)
+        for p in images:
             print(p)
     return 0
 
@@ -335,7 +395,29 @@ def cmd_verify(args) -> int:
     from videotab import verify
 
     workdir = resolve_target(args.target)
+    if load_meta(workdir).get("paper"):
+        print("紙の楽譜は演奏時刻を持たないため、時刻の照合は行いません。小節と拍の検査は check を使ってください。")
+        return 0
     return verify.run_verify(workdir, marks=args.mark, tolerance=args.tolerance)
+
+
+def cmd_paper(args) -> int:
+    from videotab import paper
+    from videotab.pipeline import Busy, Job
+
+    workdir = resolve_target(args.target)
+    try:
+        with Job(workdir).hold():
+            stored = load_meta(workdir).get("paper") or {}
+            part = args.part or stored.get("part") or paper.DEFAULT_PART
+            strings = args.strings or stored.get("strings") or 6
+            paper.configure(workdir, part, strings)
+            picks = paper.prepare(workdir)
+    except Busy:
+        raise SystemExit("実行中の曲の紙の楽譜設定は変更できません") from None
+    print(f"紙の楽譜の候補 {len(picks)} 枚: {workdir / 'paper' / 'candidates'}")
+    print("ページとパートの選択から続ける: " + _resume_command(workdir.name, workdir.resolve().parent) + " --step strip")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -358,9 +440,15 @@ def main(argv: list[str] | None = None) -> int:
         s.add_argument("--creator", help="動画の作成者（楽譜とできあがりのページに出す）")
         s.add_argument("--source-url", help="元動画のページ（https:// で始まるもの。できあがりのページからリンクする）")
 
+    def paper_fields(s) -> None:
+        s.add_argument("--paper", action="store_true", help="紙の楽譜を撮影した動画として扱う（写真・PDF・画像 ZIP は自動）")
+        s.add_argument("--part", help="紙の楽譜から書き起こすパート名（既定 Guitar I。例: Guitar II、Bass）")
+        s.add_argument("--strings", type=int, choices=[4, 6], help="紙の楽譜の弦数（既定 6。ベースは 4）")
+
     s = sub.add_parser("run", help="取り込みからタブ譜の出力までを通しで実行（画面なし）")
-    s.add_argument("target", help="動画ファイルか、既存の作業フォルダの ID")
+    s.add_argument("target", help="動画・写真・PDF・画像 ZIP・画像フォルダ、または既存の作業フォルダの ID かパス")
     video_fields(s)
+    paper_fields(s)
     # 省略と明示を区別する（省略すると、新しい曲は Claude Code、既存の曲は保存済みのエンジン）
     s.add_argument("--engine", choices=["claude", "codex"], default=None,
                    help="読み取りに使うエージェント（既定: 新しい曲は claude、既存の曲は前回のまま）")
@@ -374,6 +462,7 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("add", help="動画ファイルを新しい作業フォルダ work/<ID>/ に取り込む")
     s.add_argument("file", help=f"動画ファイル（{' '.join(VIDEO_EXTS)}）")
     video_fields(s)
+    paper_fields(s)
     s.add_argument("--root", default="work", help="作業フォルダを作る場所（既定 work/）")
     s.set_defaults(func=cmd_add)
 
@@ -383,6 +472,12 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--fps", type=float, default=1.0, help="1 秒あたりの枚数（既定 1）")
     s.add_argument("--force", action="store_true", help="既存の画像を消して作り直す")
     s.set_defaults(func=cmd_frames)
+
+    s = sub.add_parser("paper", help="紙の楽譜のパートを設定し、ページ候補を作る（エージェントは起動しない）")
+    s.add_argument("target", help="既存の作業フォルダの ID かパス")
+    s.add_argument("--part", help="書き起こすパート名（既定は保存済みの指定、なければ Guitar I。例: Guitar I、Bass）")
+    s.add_argument("--strings", type=int, choices=[4, 6], help="弦数（既定は保存済みの指定、なければ 6）")
+    s.set_defaults(func=cmd_paper)
 
     s = sub.add_parser("strip", help="タブの帯と弦の線の位置を検出")
     s.add_argument("target")

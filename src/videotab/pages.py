@@ -89,7 +89,7 @@ class Setup:
 
     @property
     def spacing(self) -> float:
-        return float(np.mean([(st[-1] - st[0]) / 5 for st in self.staves]))
+        return float(np.mean([(st[-1] - st[0]) / (len(st) - 1) for st in self.staves]))
 
 
 @dataclass
