@@ -111,6 +111,7 @@
   .chip i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
   .chip.m i { background: var(--accent); }
   .chip.a i { background: var(--ai); }
+  .chip.u i { background: var(--muted); }
 
   /* ---------- 全体の流れ ---------- */
   .flow {
@@ -132,8 +133,13 @@
   .flow li.ai .who { color: var(--ai); }
   .flow .out { font-size: 0.8rem; color: var(--muted); line-height: 1.55; }
   .flow .cmd { font-family: "JetBrains Mono", monospace; font-size: 0.72rem; color: var(--muted); margin-top: auto; }
+  .flow.paper { grid-template-columns: repeat(4, 1fr); }
+  .flow li.you { border-top-color: var(--muted); }
+  .flow li.you .who { color: var(--muted); }
+  .paper-notes { margin: 16px 0 0; padding-left: 1.2em; display: grid; gap: 8px; }
+  #paper figure { margin-top: 16px; }
   @media (max-width: 900px) { .flow { grid-template-columns: repeat(4, 1fr); } }
-  @media (max-width: 560px) { .flow { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 560px) { .flow, .flow.paper { grid-template-columns: 1fr 1fr; } }
 
   .note {
     margin-top: 14px; padding: 12px 14px; border-radius: 8px; background: var(--accent-soft);
@@ -226,7 +232,7 @@ section > h3 { margin-top: 32px; }
     <div class="kicker">videotab</div>
     <h1>動画ファイルを渡すと、画面の<span>タブ譜</span>が 1 枚の楽譜になる</h1>
   </div>
-  <p class="lead">「TAB 譜付き」の演奏動画は、画面に写るタブ譜が数小節ずつ流れていきます。videotab は、手元に用意した動画ファイルからそれを最初から最後まで拾い集めて、再生もダウンロードもできる 1 枚の楽譜にまとめます。画像を扱う部分は videotab 自身が受け持ちます。数字やリズムを読む部分は、あなたの Claude Code か Codex（以下「AI」）が受け持ちます。</p>
+  <p class="lead">「TAB 譜付き」の演奏動画は、画面に写るタブ譜が数小節ずつ流れていきます。videotab は、手元に用意した動画ファイルからそれを最初から最後まで拾い集めて、再生もダウンロードもできる 1 枚の楽譜にまとめます。画像を扱う部分は videotab 自身が受け持ちます。数字やリズムを読む部分は、あなたの Claude Code か Codex（以下「AI」）が受け持ちます。紙の楽譜（バンドスコア）の写真や PDF からも書き起こせます（下の<a href="#paper">紙の楽譜のとき</a>）。</p>
 
   <div class="staff" aria-label="タブ譜の例">
     <div class="tab-label">TAB</div>
@@ -283,7 +289,7 @@ section > h3 { margin-top: 32px; }
 <section id="flow">
   <div class="kicker">全体の流れ</div>
   <h2>7 つの段を順に進む</h2>
-  <p class="lead">画面で動画ファイルを選んで「タブ譜を作る」を押すと、この 7 段が自動で進みます。途中で失敗しても、その段からやり直せます。</p>
+  <p class="lead">画面で動画ファイルを選んで「タブ譜を作る」を押すと、この 7 段が自動で進みます。途中で失敗しても、その段からやり直せます。紙の楽譜は 3 の段から流れが分かれます（下の<a href="#paper">紙の楽譜のとき</a>）。</p>
   <div class="legend" style="margin-top:12px">
     <span class="chip m"><i></i>videotab（画像処理とルール）</span>
     <span class="chip a"><i></i>AI（Claude Code か Codex）</span>
@@ -313,6 +319,7 @@ section > h3 { margin-top: 32px; }
           <li>ffmpeg で 1 秒に 1 枚の画像にします。ファイル名に番号と時刻が入ります（例 <code>0154_02m33s000.png</code>）。</li>
           <li>ffprobe と ffmpeg は、ローカルのファイルを動画の入れ物としてだけ読みます。再生リストなどとして解釈しないので、ネットにも、ほかのファイルにも触れません。</li>
           <li>手元の画像フォルダや、komadori で書き出した ZIP も取り込めます。</li>
+          <li>紙の楽譜の写真（PNG・JPEG）・PDF・写真の ZIP は、時刻を持たないページの画像として取り込みます（PDF は Poppler で画像にします）。</li>
         </ul>
         <p class="why"><b>なぜ解像度が大事か</b>　360p だとタブの数字が数ピクセルしかなく、6 と 8 を見分けにくいためです。1080p ほどの動画を使ってください。</p>
       </div>
@@ -408,6 +415,50 @@ section > h3 { margin-top: 32px; }
     </article>
 
   </div>
+</section>
+
+<section id="paper">
+  <div class="kicker">紙の楽譜のとき</div>
+  <h2>楽譜にあるパートを選んでから読む</h2>
+  <p class="lead">バンドスコアのように、1 ページに何本もの楽器が並んだ紙の楽譜も書き起こせます。写真・PDF・写真の ZIP、紙をめくりながら撮った動画を渡すと、AI が楽譜にあるパートを洗い出して止まります。書き起こすパートを選ぶと、その段だけを切り出して読みます。</p>
+  <div class="legend" style="margin-top:12px">
+    <span class="chip m"><i></i>videotab</span>
+    <span class="chip a"><i></i>AI</span>
+    <span class="chip u"><i></i>あなた</span>
+  </div>
+  <ol class="flow paper">
+    <li><span class="who">videotab</span><span class="name">取り込み</span><span class="out">写真・PDF・ZIP はページの画像に。動画は 1 秒 1 枚に</span></li>
+    <li><span class="who">videotab</span><span class="name">紙か画面かを見分ける</span><span class="out">動画だけ。タブが見えたフレームの割合で決める（AI は使わない）</span></li>
+    <li class="ai"><span class="who">AI</span><span class="name">パートの洗い出し</span><span class="out">楽譜に書かれたパート名・TAB の有無・弦数の見込み</span></li>
+    <li class="you"><span class="who">あなた</span><span class="name">パートを選ぶ</span><span class="out">「パートの選択待ち」で止まるので、一覧から選ぶ</span></li>
+    <li class="ai"><span class="who">AI</span><span class="name">段を選ぶ</span><span class="out">ページの重複を除き、選んだパートの段を選ぶ</span></li>
+    <li><span class="who">videotab</span><span class="name">段の補正と拡大</span><span class="out">紙の曲がりを伸ばし、線の間隔をそろえる</span></li>
+    <li class="ai"><span class="who">AI</span><span class="name">読み取り</span><span class="out">段の拡大画像と元のページを見て読む</span></li>
+    <li><span class="who">videotab</span><span class="name">タブ譜の組み立て</span><span class="out">動画のときと同じ検査をして 1 枚の楽譜に</span></li>
+  </ol>
+  <figure>
+    <div class="fig">
+      <svg viewBox="0 0 560 130" role="img" aria-labelledby="f-curve">
+        <title id="f-curve">紙の曲がりで弧を描いた TAB の 6 本の線を、まっすぐで等間隔な 6 本の線に直す図</title>
+        <g fill="none" stroke="var(--muted)" stroke-width="1.5">
+          <path d="M20 22 Q130 4 240 30"/><path d="M20 38 Q130 20 240 47"/><path d="M20 54 Q130 36 240 64"/>
+          <path d="M20 70 Q130 52 240 81"/><path d="M20 86 Q130 68 240 98"/><path d="M20 102 Q130 84 240 115"/>
+        </g>
+        <text x="280" y="66" text-anchor="middle" font-size="22" fill="var(--accent)">→</text>
+        <g stroke="var(--accent)" stroke-width="1.5">
+          <line x1="320" y1="28" x2="540" y2="28"/><line x1="320" y1="44" x2="540" y2="44"/><line x1="320" y1="60" x2="540" y2="60"/>
+          <line x1="320" y1="76" x2="540" y2="76"/><line x1="320" y1="92" x2="540" y2="92"/><line x1="320" y1="108" x2="540" y2="108"/>
+        </g>
+      </svg>
+    </div>
+    <figcaption>本ののどに近いほど線が曲がり、間隔も変わる。線を何か所かで追って、段ごとにまっすぐ・等間隔に直す。</figcaption>
+  </figure>
+  <ul class="paper-notes">
+    <li><b>紙か画面かの見分け</b>　画面のタブ譜はほとんどのフレームでタブが見えますが、紙をめくる動画では見えるフレームがわずかです。手元の 12 本では、画面は 24 枚中 21〜23 枚、紙は 2〜7 枚と、はっきり分かれました。境目では画面のタブ譜の側に倒し、どちらにしたかと根拠の数を段の結果欄に出します。違っていたら「やり直す」で楽譜の種類を変えられます。</li>
+    <li><b>線を確かめられた段だけ補正</b>　TAB の線を何か所かで確かめられない段は、無理に補正せず、弦の番号の印も付けません。読み手は元のページで弦を確かめます。</li>
+    <li><b>時刻は使わない</b>　紙をめくる時刻は演奏の時刻ではないので、テンポの推定や時刻の照合はしません。テンポの表記がなければ、再生用に仮の 120 にします。</li>
+    <li><b>撮り方で精度が変わる</b>　ぼけ・指で隠れた所・画面の外に切れた小節は、補正しても戻りません。1080p 以上で、本をしっかり開いて撮ると読みやすくなります。</li>
+  </ul>
 </section>
 
 <section id="readers">
@@ -527,6 +578,10 @@ uv run videotab run 動画.mp4
 <span class="c"># 読み取りのモデルと推論の強さを選ぶこともできる（画面でも選べる。選ばなければ普段の設定）</span>
 uv run videotab run 動画.mp4 --model opus --effort max
 
+<span class="c"># 紙の楽譜（写真・PDF・ZIP・紙を撮った動画）。パートの選択待ちで止まるので、表示された名前で続ける</span>
+uv run videotab run 楽譜.pdf
+uv run videotab run ID --part 'Guitar II'
+
 <span class="c"># 段ごとに動かすこともできる（ID は add が表示する）</span>
 uv run videotab add 動画.mp4 / frames ID / strip ID / pages ID / check ID / build ID / verify ID</pre>
   <div class="table-wrap">
@@ -545,7 +600,7 @@ uv run videotab add 動画.mp4 / frames ID / strip ID / pages ID / check ID / bu
     </table>
   </div>
   <p class="note">動画・画像・楽譜は、手元の <code>work/</code> フォルダに保存されます（git の管理外なので、リポジトリには入りません）。要らなくなった曲は、画面の「この曲を消す」で作業フォルダごと消せます（元に戻せません）。</p>
-  <p class="note">詳しい使い方は <a href="https://github.com/shimabox/videotab#readme">README</a> と、<a href="https://github.com/shimabox/videotab/blob/main/docs/usage.md">画面の使い方</a>・<a href="https://github.com/shimabox/videotab/blob/main/docs/model-settings.md">読み取りのモデルと推論の強さ</a>・<a href="https://github.com/shimabox/videotab/blob/main/docs/commands.md">コマンド</a> にあります。</p>
+  <p class="note">詳しい使い方は <a href="https://github.com/shimabox/videotab#readme">README</a> と、<a href="https://github.com/shimabox/videotab/blob/main/docs/usage.md">画面の使い方</a>・<a href="https://github.com/shimabox/videotab/blob/main/docs/paper.md">紙の楽譜から書き起こす</a>・<a href="https://github.com/shimabox/videotab/blob/main/docs/model-settings.md">読み取りのモデルと推論の強さ</a>・<a href="https://github.com/shimabox/videotab/blob/main/docs/commands.md">コマンド</a> にあります。</p>
 </section>
 
 <aside class="disclaimer" aria-labelledby="disclaimer-title">
