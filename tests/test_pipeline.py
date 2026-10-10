@@ -579,16 +579,20 @@ def test_pipeline_passes_given_band_to_strip(tmp_path, monkeypatch):
 # --- 画面のタブ譜か、紙を撮った動画かを strip の段で見分ける
 
 
-def judged_work(tmp_path, monkeypatch, result):
+def judged_work(tmp_path, monkeypatch, result, n_pages=1, reader=None, once=False):
     """切り出し済みの動画の曲。strip.detect は result を返し、コマンドは同じプロセスで実行する。
-    読み手は起動すると失敗し、パートの洗い出しは 1 パートを書く。起動された担当の名前のリストも返す。"""
+    読み手は起動すると失敗し（reader を渡せばそれを使う）、パートの洗い出しは 1 パートを書く。
+    起動された担当の名前のリストも返す。once なら、result を返すのは最初の検出だけで、あとは本物の検出。"""
     from videotab import paper
 
-    wd = make_work(tmp_path, n_pages=1)
+    wd = make_work(tmp_path, n_pages=n_pages)
     detections, agents = [], []
+    real_detect = strip.detect
 
     def detect(frames, n_samples=24, band=None):
         detections.append(band)
+        if once and len(detections) > 1:
+            return real_detect(frames, n_samples, band)
         return result
 
     def run_cli(self, *argv):
@@ -608,7 +612,7 @@ def judged_work(tmp_path, monkeypatch, result):
     monkeypatch.setattr(strip, "detect", detect)
     monkeypatch.setattr(pipeline.Job, "_cli", run_cli)
     monkeypatch.setattr(paper, "run_agent", paper_agent)
-    monkeypatch.setattr(read, "run_agent", no_reader)
+    monkeypatch.setattr(read, "run_agent", reader or no_reader)
     job = pipeline.Job.create(wd)
     job.update_step("add", status="done")
     job.update_step("frames", status="done")
@@ -719,6 +723,40 @@ def test_no_tab_message_tells_how_to_import_paper_video_without_launching_agents
     assert "取り込んだ動画と画像を消しました" in message and "videotab run 動画 --paper" in message
     assert data["status"] == "failed" and "source_mode" not in data
     assert not (wd / "video.mp4").exists() and not (wd / "frames").exists()
+
+
+def test_run_step_strip_screen_turns_judged_paper_back_into_screen_and_finishes(tmp_path, monkeypatch, capsys):
+    from test_source_judge import PAPER_CHOICE, PAPER_LIKE, detected
+
+    from videotab.workdir import load_meta
+
+    fake = FakeAgent()
+    job, detections, agents = judged_work(tmp_path, monkeypatch, detected(**PAPER_LIKE), n_pages=10, reader=fake, once=True)
+    wd = job.workdir
+    argv = ["run", wd.name, "--root", str(wd.parent)]
+    assert cli.main(argv) == pipeline.PART_WAIT_EXIT  # 紙を撮った動画と見分けられて、パートの選択待ちで止まる
+    assert load_meta(wd)["source_choice"] == PAPER_CHOICE and job.load()["source_mode"] == "paper"
+    assert "画面のタブ譜なら、やり直すの楽譜の種類を画面にしてください" in capsys.readouterr().out
+
+    assert cli.main([*argv, "--step", "strip", "--screen"]) == 0
+    meta = load_meta(wd)
+    assert "paper" not in meta and meta["source_choice"] == {"mode": "video", "by": "user"}
+    assert meta["strip"]["staves"] and any((wd / "strip").iterdir())  # 画面のタブ譜として検出し直した
+    assert (wd / "paper" / "parts.json").exists()  # 紙の楽譜のときの洗い出しは消さない
+    data = job.load()
+    steps = {s["name"]: s for s in data["steps"]}
+    assert data["status"] == "done" and "source_mode" not in data
+    assert [s["status"] for s in data["steps"]] == ["done"] * 7
+    assert steps["strip"]["message"] is None  # 利用者が決めた種類なので、見分けた結果は出さない
+    assert not steps["verify"]["message"].startswith("小節と拍の検査済み")  # 動画の時刻と照らす
+    assert detections == [None, None] and agents == ["パートの洗い出し"]
+    assert {label for label, _, _ in fake.prompts} == {"A", "B", "まとめ役"}
+    assert (wd / f"{wd.name}.html").exists()
+
+    # 以後は、紙を撮った動画に見える結果でも見分けない
+    monkeypatch.setattr(strip, "detect", lambda *args, **kwargs: detected(**PAPER_LIKE))
+    assert cli.main(["strip", str(wd)]) == 0
+    assert "paper" not in load_meta(wd)
 
 
 def test_paper_exit_code_without_paper_setting_is_a_failure(tmp_path, monkeypatch):

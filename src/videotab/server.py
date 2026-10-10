@@ -11,6 +11,10 @@ POST /api/jobs/<ID>/info は、曲の情報（題名・作成者・元動画の�
 job.json に書き、タブ譜の組み立てより前の段が済んだ曲だけをタブ譜の組み立ての段から組み立て直す
 （読み取りはしない）。
 
+POST /api/jobs/<ID>/retry は、段を指定してやり直す。動画の曲では source_mode（"video" か "paper"）で
+楽譜の種類も変えられる。今の種類と違えば、利用者が決めた種類として meta.json に残し、帯と線の検出の
+段からやり直す（strip の段が自動で見分けた結果を、どちら向きにも直せる）。
+
 POST /api/jobs/<ID>/part は、紙の楽譜のパートの選択待ちの曲で、洗い出した一覧（paper/parts.json）に
 ある TAB のあるパートの名前と弦数を受け取り、ページとパートの選択から続ける。一覧に無い名前は断る。
 
@@ -225,6 +229,8 @@ class App:
         workdir = receiver(stream, length, name, self.root, **fields)
         if paper_mode or document:
             selected = _paper_options(part, strings)
+            # 利用者が紙の楽譜と決めた曲として記録する（strip の段が楽譜の種類を自動で見分けない）
+            paper.switch_to_paper(workdir, paper.user_choice("paper"))
             if selected["part"] is None:
                 paper.configure_pending(workdir, selected["strings"])
             else:
@@ -235,22 +241,30 @@ class App:
         return workdir.name
 
     def retry(self, job_id: str, step: str | None, engine: str | None, fields: dict | None = None,
-              paper_choice: dict | None = None) -> None:
+              paper_choice: dict | None = None, source_mode: str | None = None) -> None:
         """やり直す。fields はリクエストにあった model / effort だけの表。
 
         キーが無い項目は引き継ぐ（エンジンが変わるときは普段の設定）。None は普段の設定、
         文字列はその値（検査して、使えなければ ValueError）。
+
+        source_mode（"video" か "paper"）は動画の曲の楽譜の種類。今の種類と違えば、利用者が決めた
+        種類として切り替え、帯と線の検出の段（それより前の段を指定したときは、その段）からやり直す。
+        今の種類と同じなら切り替えず、指定された段からやり直す。写真・PDF・ZIP の曲は紙の楽譜だけ。
         """
+        from videotab import paper
+
         self._check_engine(engine)
         if step is not None and step not in STEP_NAMES:
             raise ValueError("step が違います")
+        if source_mode is not None and not (isinstance(source_mode, str) and source_mode in ("video", "paper")):
+            raise ValueError("楽譜の種類が違います")
         fields = fields or {}
         selected = None
         if paper_choice is not None:
-            from videotab import paper
-
             if not isinstance(paper_choice, dict):
                 raise ValueError("紙の楽譜の指定が違います")
+            if source_mode == "video":
+                raise ValueError("画面のタブ譜としてやり直すときは、パートを指定できません")
             selected = paper.options(paper_choice.get("part"), paper_choice.get("strings"))
         with self.lock:  # 状態の確認・書き換え・登録を 1 つの排他区間で行う
             self._folder(job_id)  # 順番待ちに入る ID を、実際のフォルダ名と同じ綴りに限る
@@ -274,6 +288,24 @@ class App:
                 choice = agent_settings.Choice(model, effort)
             if self._busy(job_id):
                 raise Busy("実行中か順番待ちです")
+            meta = load_meta(job.workdir)
+            if source_mode == "video" and meta.get("source_kind") == "document":
+                raise ValueError("写真・PDF・ZIP の曲は、紙の楽譜としてだけ扱えます")
+            if source_mode is not None and source_mode != ("paper" if meta.get("paper") else "video"):
+                # 楽譜の種類を変えたら、前の種類の検出結果・拡大画像・読み取り結果を使い回さない
+                if step is None or STEP_NAMES.index(step) > STEP_NAMES.index("strip"):
+                    step = "strip"
+                with job.hold():
+                    if source_mode == "paper":
+                        paper.switch_to_paper(job.workdir, paper.user_choice("paper"), notify=job.log)
+                        if selected is not None:
+                            paper.configure(job.workdir, **selected)
+                    else:
+                        paper.switch_to_screen(job.workdir, notify=job.log)
+                        job.clear_source_mode()
+                    job.reset_from(step, engine, choice)
+                self._enqueue_locked(job_id)
+                return
             if selected is not None:
                 stored = load_meta(job.workdir).get("paper")
                 if not stored:
@@ -533,6 +565,10 @@ class App:
             "engine": engine,
             "choice": agent_settings.shown_choice(engine, data.get("choice")),
             "paper": meta.get("paper"),
+            # 動画の曲か、写真・PDF・ZIP の曲か（やり直しの行の「楽譜の種類」は動画の曲だけに出す）
+            "source_kind": "document" if meta.get("source_kind") == "document" else "video",
+            # 楽譜の種類をだれが決めたか（strip の段が見分けた・利用者が決めた）。記録が無ければ null
+            "source_choice": _source_choice(meta),
             # 紙の楽譜で洗い出したパートの一覧（検査済み）。無い・検査に通らないときは空
             "parts": parts,
             "paper_previews": previews,
@@ -679,6 +715,27 @@ def _paper_options(part: str | None, strings: int | None) -> dict:
     if part is None:
         return paper.pending_options(strings)
     return paper.options(part, 6 if strings is None else strings)
+
+
+def _source_choice(meta: dict) -> dict | None:
+    """詳細に出す楽譜の種類の記録（meta.json の source_choice）。無い・形が違うときは None。
+
+    meta.json は読み手も書けるので、知っている項目だけを確かめ直して出す。
+    """
+    from videotab.strip import frame_counts
+
+    choice = meta.get("source_choice")
+    if not isinstance(choice, dict):
+        return None
+    mode, by = choice.get("mode"), choice.get("by")
+    if not (isinstance(mode, str) and mode in ("video", "paper") and isinstance(by, str) and by in ("auto", "user")):
+        return None
+    shown = {"mode": mode, "by": by}
+    for key in ("tab_frames", "located_frames"):
+        counts = frame_counts(choice.get(key))
+        if counts is not None:
+            shown[key] = list(counts)
+    return shown
 
 
 def file_title(meta: dict) -> str | None:
@@ -880,10 +937,10 @@ def make_handler(app: App):
                     app.cancel(job_id)
                 elif action == "retry":
                     fields = {k: body[k] for k in ("model", "effort") if k in body}
-                    if "paper" in body:
-                        app.retry(job_id, body.get("step"), body.get("engine"), fields, paper_choice=body["paper"])
-                    else:
-                        app.retry(job_id, body.get("step"), body.get("engine"), fields)
+                    # 紙の楽譜のパート・弦数と、動画の曲の楽譜の種類は、送られたときだけ渡す
+                    extra = {arg: body[key] for key, arg in (("paper", "paper_choice"), ("source_mode", "source_mode"))
+                             if key in body}  # fmt: skip
+                    app.retry(job_id, body.get("step"), body.get("engine"), fields, **extra)
                 elif action == "info":
                     # 欠けた項目を空として扱うと、一部だけの本文で値が消えるので、すべて求める
                     missing = [k for k in INFO_KEYS if k not in body]

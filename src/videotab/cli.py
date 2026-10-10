@@ -175,6 +175,10 @@ def cmd_run(args) -> int:
     from videotab.pipeline import PART_WAIT_EXIT, STEP_NAMES, Busy, Job, has_steps
     from videotab.workdir import ID_PATTERN
 
+    if args.screen and args.paper:
+        raise SystemExit("--paper と --screen は同時に指定できません")
+    if args.screen and (args.part is not None or args.strings is not None):
+        raise SystemExit("--part・--strings は紙の楽譜の指定なので、--screen と一緒には指定できません")
     root = Path(args.root).resolve()
     target_path = Path(args.target)
     existing = target_path if target_path.is_dir() else root / args.target if ID_PATTERN.fullmatch(args.target) else None
@@ -189,6 +193,9 @@ def cmd_run(args) -> int:
     elif Path(args.target).exists():
         if args.step:
             raise SystemExit("--step は既存の作業フォルダの ID と一緒に指定してください（新しい動画は最初の段から実行します）")
+        if args.screen:
+            raise SystemExit("--screen は既存の作業フォルダの ID と一緒に指定してください"
+                             "（新しい動画が画面のタブ譜か紙の楽譜かは、自動で見分けます）")  # fmt: skip
         # 指定の誤りで取り込み済みのフォルダを残さないよう、取り込む前に検査する
         engine, choice = _run_choice(args, {})
         workdir = _add_input(Path(args.target), args)
@@ -207,6 +214,22 @@ def cmd_run(args) -> int:
             Job.create(workdir, engine, choice=choice)
         else:
             data = job.load()
+            after_strip = bool(args.step) and STEP_NAMES.index(args.step) > STEP_NAMES.index("strip")
+            if args.screen:
+                # 紙の楽譜として扱っている動画の曲を、画面のタブ譜に切り替える。すでに画面のタブ譜なら何も変えない
+                if load_meta(workdir).get("source_kind") == "document":
+                    raise SystemExit("写真・PDF・ZIP の曲は、紙の楽譜としてだけ扱えます（--screen は指定できません）")
+                if _saved_paper(workdir):
+                    _run_choice(args, data)  # 切り替える前にもモデル・推論の指定を確かめる
+                    if after_strip:
+                        raise SystemExit("楽譜の種類を変えるときは --step strip からやり直してください")
+                    try:
+                        paper.switch_to_screen(workdir)
+                    except ValueError as e:
+                        raise SystemExit(str(e)) from None
+                    job.clear_source_mode()
+                    data = job.load()
+                    args.step = args.step or "strip"
             if args.paper or args.part is not None or args.strings is not None:
                 stored = _saved_paper(workdir)
                 try:
@@ -215,8 +238,10 @@ def cmd_run(args) -> int:
                     raise SystemExit(str(e)) from None
                 if opts != stored:
                     _run_choice(args, data)  # パートを保存する前にもモデル・推論の指定を確かめる
-                    if args.step and STEP_NAMES.index(args.step) > STEP_NAMES.index("strip"):
-                        raise SystemExit("パート・弦数を変えるときは --step strip からやり直してください")
+                    if after_strip:
+                        # 紙の楽譜でなかった曲（stored が空）は、楽譜の種類の切り替えになる
+                        changed = "パート・弦数" if stored else "楽譜の種類"
+                        raise SystemExit(f"{changed}を変えるときは --step strip からやり直してください")
                     if note:
                         print(note, flush=True)
                     _save_paper(workdir, opts)
@@ -566,6 +591,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("target", help="動画・写真・PDF・画像 ZIP・画像フォルダ、または既存の作業フォルダの ID かパス")
     video_fields(s)
     paper_fields(s)
+    s.add_argument("--screen", action="store_true",
+                   help="既存の曲を画面のタブ譜として扱う（紙の楽譜と見分けられた動画を戻す。--step strip からやり直す）")
     # 省略と明示を区別する（省略すると、新しい曲は Claude Code、既存の曲は保存済みのエンジン）
     s.add_argument("--engine", choices=["claude", "codex"], default=None,
                    help="読み取りに使うエージェント（既定: 新しい曲は claude、既存の曲は前回のまま）")

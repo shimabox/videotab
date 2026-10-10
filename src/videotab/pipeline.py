@@ -228,6 +228,17 @@ class Job:
             data["engine"] = engine
         self.save(data)
 
+    def clear_source_mode(self) -> None:
+        """紙の楽譜から画面のタブ譜に切り替えた曲の、紙の楽譜の印（source_mode）を消す。
+
+        段の表示名と時刻の照合が、動画のものに戻る。印が無ければ何も書かない。
+        """
+        with self._state_lock:
+            data = self._current()
+            if "source_mode" in data:
+                del data["source_mode"]
+                self.save(data)
+
     def mark_stopped(self) -> None:
         """順番待ちから外したとき、止めたとして記録する（段はそのまま）。"""
         with self._state_lock:

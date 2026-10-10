@@ -1082,10 +1082,11 @@ def test_page_lists_found_parts_as_text_and_lets_part_be_left_empty():
     # パートが決まっている曲では、状態が選択待ちのままでも選ぶ区画を出さない
     assert 'return d.status === "waiting" && !(d.paper && d.paper.part != null);' in section
     assert "var waiting = choosingPart(d);" in section
-    # 新規フォームではパートを聞かない（紙の楽譜はいつも洗い出した一覧から選ぶ）。楽譜の種類は動画のときだけ聞く
+    # 新規フォームではパートを聞かない（紙の楽譜はいつも洗い出した一覧から選ぶ）。楽譜の種類も聞かない
+    # （動画が画面のタブ譜か紙を撮ったものかは、帯と線の検出の段が見分ける）
     assert 'id="paper-part"' not in page and 'id="paper-hint"' not in page and "fields.part" not in page
-    assert '<div class="pick-row paper-pick" id="paper-row" hidden>' in page
-    assert '$("paper-row").hidden = !chosen || isDocument(chosen);' in page
+    assert 'id="paper-row"' not in page and 'id="source-mode"' not in page and "fields.source_mode" not in page
+    assert "showPaperFields" not in page and "isDocument" not in page
     # やり直しの行は、パート欄が空なら paper を送らない。弦数が決まっていない曲の初期値は 6
     assert "if (part) body.paper = { part: part, strings: Number(row.paperStrings.value) };" in page
     assert 'row.paperStrings.value = d.paper.strings === 4 ? "4" : "6";' in page

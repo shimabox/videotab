@@ -195,7 +195,7 @@ def judged_source(result: StripResult, mode: str) -> dict:
     return choice
 
 
-def _counts(pair) -> tuple[int, int] | None:
+def frame_counts(pair) -> tuple[int, int] | None:
     """source_choice の [数, 全体] を確かめたもの。形が違えば None（meta.json は読み手も書ける）。"""
     if not isinstance(pair, (list, tuple)) or len(pair) != 2:
         return None
@@ -209,7 +209,7 @@ def screen_note(tab_frames) -> str | None:
 
     根拠の数値はいつも出す。タブが見えたフレームが少ないときは、紙の楽譜への切り替え方を添える。
     """
-    counts = _counts(tab_frames)
+    counts = frame_counts(tab_frames)
     if counts is None:
         return None
     with_tab, used = counts
@@ -228,7 +228,7 @@ def paper_counts(choice) -> str | None:
     """紙と判定した根拠の数値の文（choice は meta.json の source_choice）。形が違えば None。"""
     if not isinstance(choice, dict):
         return None
-    tab, located = _counts(choice.get("tab_frames")), _counts(choice.get("located_frames"))
+    tab, located = frame_counts(choice.get("tab_frames")), frame_counts(choice.get("located_frames"))
     if tab is None or located is None:
         return None
     return f"タブが見えたフレーム {tab[0]}/{tab[1]}、補正で線が取れたフレーム {located[0]}/{located[1]}"

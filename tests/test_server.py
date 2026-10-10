@@ -850,3 +850,214 @@ def test_startup_removes_leftovers_of_deleting(tmp_path, monkeypatch):
     server.App(root)
     assert sorted(os.listdir(root)) == [".deleting-link", JOB]  # リンクはたどらず、消さない
     assert (keep / "x.txt").exists()
+
+
+# --- やり直しで楽譜の種類を変える
+
+USER_PAPER = {"mode": "paper", "by": "user"}
+USER_SCREEN = {"mode": "video", "by": "user"}
+AUTO_SCREEN = {"mode": "video", "by": "auto", "tab_frames": [22, 24]}
+AUTO_PAPER = {"mode": "paper", "by": "auto", "tab_frames": [7, 24], "located_frames": [25, 97]}
+PENDING = {"part": None, "strings": None}
+
+
+@pytest.fixture
+def idle_app(tmp_path, monkeypatch):
+    """順番待ちに入れるだけで、実行は始めない画面。"""
+    monkeypatch.setattr(server.App, "_worker", lambda *_: None)
+    monkeypatch.setattr(server, "available_engines", lambda: {"claude": True, "codex": True})
+    return server.App(tmp_path / "work")
+
+
+def finished_song(root, **meta):
+    """全段が済んだ曲。meta の項目を meta.json に書く（paper があれば、job.json は紙の楽譜の曲になる）。"""
+    wd = root / JOB
+    wd.mkdir(parents=True)
+    (wd / "meta.json").write_text(json.dumps({"id": JOB, "title": "曲", **meta}), encoding="utf-8")
+    job = pipeline.Job.create(wd)
+    data = job.load()
+    for s in data["steps"]:
+        s.update(status="done", message=f"{s['name']} の結果")
+    data["status"] = "done"
+    job.save(data)
+    return job
+
+
+def meta_of(job):
+    return json.loads((job.workdir / "meta.json").read_text(encoding="utf-8"))
+
+
+def statuses(job):
+    return {s["name"]: s["status"] for s in job.load()["steps"]}
+
+
+def test_retry_with_other_source_mode_switches_the_song_and_restarts_from_strip(idle_app):
+    job = finished_song(idle_app.root, strip={"band": [240, 350]}, source_choice=AUTO_SCREEN)
+    (job.workdir / "strip").mkdir()
+    (job.workdir / "strip" / "check_0001.png").write_bytes(b"old")
+
+    idle_app.retry(JOB, "build", None, source_mode="paper")  # 画面のタブ譜 → 紙の楽譜
+    assert meta_of(job) == {"id": JOB, "title": "曲", "paper": PENDING, "source_choice": USER_PAPER}
+    assert not (job.workdir / "strip").exists()
+    assert job.load()["status"] == "queued" and idle_app.waiting == [JOB]
+    assert statuses(job) == {"add": "done", "frames": "done", "strip": "pending", "pages": "pending",
+                             "read": "pending", "build": "pending", "verify": "pending"}  # fmt: skip
+    before = meta_of(job)
+    with pytest.raises(pipeline.Busy):  # 順番待ちの間は変えられない
+        idle_app.retry(JOB, "strip", None, source_mode="video")
+    assert meta_of(job) == before
+
+    # strip の段がパートを洗い出して、選択待ちで止まったところ
+    idle_app.waiting.clear()
+    data = job.load()
+    data.update(source_mode="paper", status="waiting")
+    job.save(data)
+    (job.workdir / "paper").mkdir()
+    (job.workdir / "paper" / "parts.json").write_text("{}", encoding="utf-8")
+
+    idle_app.retry(JOB, None, None, source_mode="video")  # 紙の楽譜 → 画面のタブ譜
+    assert meta_of(job) == {"id": JOB, "title": "曲", "source_choice": USER_SCREEN}
+    data = job.load()
+    assert data["status"] == "queued" and "source_mode" not in data and idle_app.waiting == [JOB]
+    assert statuses(job)["frames"] == "done" and statuses(job)["strip"] == "pending"
+    assert (job.workdir / "paper" / "parts.json").exists()  # paper/ は消さない
+
+
+@pytest.mark.parametrize("meta, mode", [
+    ({"strip": {"band": [240, 350]}, "source_choice": AUTO_SCREEN}, "video"),
+    ({"strip": {"band": [240, 350]}}, "video"),  # source_choice の無い、これまでの曲
+    ({"paper": {"part": "Guitar I", "strings": 6}, "source_choice": AUTO_PAPER}, "paper"),
+    ({"paper": {"part": "Guitar I", "strings": 6}}, "paper"),
+])  # fmt: skip
+def test_retry_with_same_source_mode_only_retries_from_the_given_step(idle_app, meta, mode):
+    job = finished_song(idle_app.root, **meta)
+    (job.workdir / "strip").mkdir()
+    before = (job.workdir / "meta.json").read_bytes()
+    saved = job.load()
+    idle_app.retry(JOB, "read", None, source_mode=mode)
+    assert (job.workdir / "meta.json").read_bytes() == before and (job.workdir / "strip").is_dir()
+    assert job.load().get("source_mode") == saved.get("source_mode")
+    assert job.load()["status"] == "queued" and idle_app.waiting == [JOB]
+    assert statuses(job) == {"add": "done", "frames": "done", "strip": "done", "pages": "done",
+                             "read": "pending", "build": "pending", "verify": "pending"}  # fmt: skip
+
+
+def test_retry_to_paper_keeps_an_earlier_step_and_accepts_a_typed_part(idle_app):
+    job = finished_song(idle_app.root, strip={"band": [240, 350]})
+    idle_app.retry(JOB, "frames", None, source_mode="paper", paper_choice={"part": "Bass", "strings": 4})
+    assert meta_of(job) == {"id": JOB, "title": "曲", "paper": {"part": "Bass", "strings": 4}, "source_choice": USER_PAPER}
+    assert statuses(job)["add"] == "done" and statuses(job)["frames"] == statuses(job)["strip"] == "pending"
+
+
+def test_retry_refuses_screen_for_documents_and_bad_source_modes(idle_app):
+    job = finished_song(idle_app.root, source_kind="document", paper={"part": "Guitar I", "strings": 6},
+                        source_choice=USER_PAPER)  # fmt: skip
+    before = ((job.workdir / "meta.json").read_bytes(), job.path.read_bytes())
+    with pytest.raises(ValueError, match="写真・PDF・ZIP の曲は、紙の楽譜としてだけ扱えます"):
+        idle_app.retry(JOB, "strip", None, source_mode="video")
+    for bad in ("nope", "", 5, ["paper"], True):
+        with pytest.raises(ValueError, match="楽譜の種類が違います"):
+            idle_app.retry(JOB, "strip", None, source_mode=bad)
+    with pytest.raises(ValueError, match="パートを指定できません"):
+        idle_app.retry(JOB, "strip", None, source_mode="video", paper_choice={"part": "Bass", "strings": 4})
+    assert ((job.workdir / "meta.json").read_bytes(), job.path.read_bytes()) == before and idle_app.waiting == []
+    with job.hold():  # videotab run など、別の実行が握っている
+        with pytest.raises(pipeline.Busy):
+            idle_app.retry(JOB, "strip", None, source_mode="paper")
+    assert (job.workdir / "meta.json").read_bytes() == before[0]
+    idle_app.retry(JOB, "strip", None, source_mode="paper")  # 同じ種類なら、書類の曲もやり直せる
+    assert (job.workdir / "meta.json").read_bytes() == before[0] and idle_app.waiting == [JOB]
+
+
+def test_retry_to_screen_resets_tuning_of_the_chosen_paper_part(idle_app):
+    job = finished_song(idle_app.root, paper={"part": "Bass", "strings": 4}, source_choice=USER_PAPER)
+    score = {"title": "曲", "tempo": 96, "time_signature": [4, 4], "tuning": "g2 d2 a1 e1", "capo": 2}
+    (job.workdir / "score.json").write_text(json.dumps(score), encoding="utf-8")
+    idle_app.retry(JOB, "strip", None, source_mode="video")
+    new = json.loads((job.workdir / "score.json").read_text(encoding="utf-8"))
+    assert new == {**score, "tuning": build.DEFAULT_TUNING, "capo": 0}
+    (old,) = (job.workdir / "history").glob("part-*/score.json")
+    assert json.loads(old.read_text(encoding="utf-8")) == score
+
+
+def test_source_mode_is_switched_through_the_retry_api(idle_app):
+    job = finished_song(idle_app.root, strip={"band": [240, 350]}, source_choice=AUTO_SCREEN)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(idle_app))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{httpd.server_address[1]}/api/jobs/{JOB}/retry"
+    try:
+        before = meta_of(job)
+        assert call(url, {"step": "strip", "source_mode": "paper"}, header=False)[0] == 403
+        for bad in ("nope", 5, ["paper"]):
+            assert call(url, {"step": "strip", "source_mode": bad})[0] == 400
+        assert meta_of(job) == before and idle_app.waiting == []
+        assert call(url, {"step": "read", "source_mode": "paper"})[0] == 200
+        assert meta_of(job)["paper"] == PENDING and meta_of(job)["source_choice"] == USER_PAPER
+        assert statuses(job)["strip"] == "pending"
+        assert call(url, {"step": "strip", "source_mode": "video"})[0] == 409  # 順番待ちに入った
+        idle_app.waiting.clear()
+        assert call(url, {"step": "strip", "source_mode": None})[0] == 200  # null は指定なしと同じ
+        assert meta_of(job)["source_choice"] == USER_PAPER
+    finally:
+        httpd.shutdown()
+
+
+def test_detail_tells_video_from_document_and_shows_checked_source_choice(idle_app):
+    job = finished_song(idle_app.root, strip={"band": [240, 350]}, source_choice=AUTO_SCREEN)
+    detail = idle_app.detail(JOB)
+    assert detail["source_kind"] == "video" and detail["source_choice"] == AUTO_SCREEN and detail["paper"] is None
+    meta_path = job.workdir / "meta.json"
+
+    def shown(**meta):
+        meta_path.write_text(json.dumps({"id": JOB, **meta}), encoding="utf-8")
+        detail = idle_app.detail(JOB)
+        return detail["source_kind"], detail["source_choice"]
+
+    assert shown() == ("video", None)  # source_choice の無い、これまでの曲
+    assert shown(paper=PENDING, source_choice=AUTO_PAPER) == ("video", AUTO_PAPER)
+    assert shown(paper=PENDING, source_choice=USER_PAPER, source_kind="document") == ("document", USER_PAPER)
+    assert shown(source_kind="other") == ("video", None)
+    # meta.json は読み手も書けるので、知っている項目だけを確かめ直して出す
+    assert shown(source_choice={**USER_SCREEN, "note": "<b>x</b>", "tab_frames": "22/24"}) == ("video", USER_SCREEN)
+    for bad in ("paper", ["paper"], {"mode": "paper"}, {"mode": "tab", "by": "user"}, {"mode": "paper", "by": ["user"]}):
+        assert shown(source_choice=bad) == ("video", None), bad
+
+
+def test_retry_row_lets_only_video_songs_change_source_mode_and_shows_part_fields_for_paper():
+    from importlib import resources
+
+    page = resources.files("videotab").joinpath("templates", "app.html").read_text(encoding="utf-8")
+    build = page_section("一覧と詳細").split("function buildRetryRow(")[1].split("\n  }\n\n")[0]
+    # 楽譜の種類は動画の曲だけに出し、今の値を初期値にする
+    assert 'var isVideo = d.source_kind !== "document";' in build
+    assert build.index("if (isVideo) {") < build.index('"aria-label": "楽譜の種類"')
+    assert 'el("option", { value: "video", text: "画面のタブ譜" }), el("option", { value: "paper", text: "紙の楽譜" })' in build
+    assert 'var current = d.paper ? "paper" : "video";' in build
+    assert "row.sourceMode.value = retryChoice.sourceMode || current;" in build
+    assert 'text: "楽譜の種類" }), row.sourceMode]' in build
+    # パート・弦数の欄は紙の楽譜のときだけ出す。種類の欄は、パート・弦数と同じ段の先頭に置く
+    assert 'partField.hidden = stringsField.hidden = mode !== "paper";' in build
+    assert "modeField, partField, stringsField, note\n      ]), goRow);" in build
+    css = page.split("<style>")[1].split("</style>")[0]
+    hidden = ".retry-main .pick[hidden], .retry-main .retry-note[hidden] { display: none; }"
+    assert hidden in css and css.index(hidden) > css.index(".retry-main .pick { display: inline-flex;")  # あとの規則が勝つ
+    # 送るのは動画の曲だけ。画面のタブ譜としてやり直すときは、パートを送らない
+    send = page_section("一覧と詳細").split("function retry(")[1].split("\n  }\n")[0]
+    assert "if (row.sourceMode) body.source_mode = row.sourceMode.value;" in send
+    assert 'var asPaper = row.paperPart && (!row.sourceMode || row.sourceMode.value === "paper");' in send
+    assert 'var part = asPaper ? row.paperPart.value.trim() : "";' in send
+    # 新規フォームでは楽譜の種類を送らない
+    form = page.split("// --- 動画ファイルの選択・ドロップと送信\n")[1]  # 最後の節
+    assert "source_mode" not in form and "source-mode" not in page
+
+
+def test_uploaded_document_is_recorded_as_paper_chosen_by_user(idle_app):
+    import io
+
+    from PIL import Image
+
+    raw = io.BytesIO()
+    Image.new("RGB", (40, 30), "white").save(raw, format="PNG")
+    job_id = idle_app.receive(io.BytesIO(raw.getvalue()), len(raw.getvalue()), "score.png", "claude")
+    meta = json.loads((idle_app.root / job_id / "meta.json").read_text(encoding="utf-8"))
+    assert meta["source_kind"] == "document" and meta["paper"] == PENDING and meta["source_choice"] == USER_PAPER

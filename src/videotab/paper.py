@@ -65,21 +65,31 @@ def is_chosen(data) -> bool:
 def configure(workdir: Path, part: str, strings: int) -> None:
     selected = options(part, strings)
     meta = load_meta(workdir)
-    if selected != meta.get("paper") and (workdir / "score.json").exists():
+    if selected != meta.get("paper"):
         from videotab.build import DEFAULT_TUNING
 
-        root = confine.root_of(workdir)
-        score = read_json(confine.guard(workdir / "score.json", root=root))
-        if not isinstance(score, dict):
-            raise ValueError("score.json の形が違います。見出しを直してからパートを変更してください")
-        # 前のパートのチューニングとカポを持ち越さない。見出しの元の値は履歴に残す。
-        with inside.open_dir(root, f"history/part-{time.time_ns()}") as folder:
-            inside.write_text(folder, "score.json", json_text(score))
-            inside.write_text(folder, "paper.json", json_text(meta.get("paper")))
-        score = {**score, "tuning": "g2 d2 a1 e1" if strings == 4 else DEFAULT_TUNING, "capo": 0}
-        write_json(workdir / "score.json", score, root=root)
+        _restart_tuning(workdir, meta, "g2 d2 a1 e1" if strings == 4 else DEFAULT_TUNING, "パート")
     meta["paper"] = selected
     save_meta(workdir, meta)
+
+
+def _restart_tuning(workdir: Path, meta: dict, tuning: str, what: str) -> None:
+    """score.json（見出し）があれば、チューニングを tuning、カポを 0 に戻す。
+
+    前のパートのチューニングとカポを持ち越さない。見出しの元の値は履歴に残す。what は、見出しを
+    読めないときの文に入れる、変えようとしているもの。
+    """
+    if not (workdir / "score.json").exists():
+        return
+    root = confine.root_of(workdir)
+    score = read_json(confine.guard(workdir / "score.json", root=root))
+    if not isinstance(score, dict):
+        raise ValueError(f"score.json の形が違います。見出しを直してから{what}を変更してください")
+    with inside.open_dir(root, f"history/part-{time.time_ns()}") as folder:
+        inside.write_text(folder, "score.json", json_text(score))
+        inside.write_text(folder, "paper.json", json_text(meta.get("paper")))
+    score = {**score, "tuning": tuning, "capo": 0}
+    write_json(workdir / "score.json", score, root=root)
 
 
 def configure_pending(workdir: Path, strings: int | None = None) -> None:
@@ -111,6 +121,23 @@ def switch_to_paper(workdir: Path, choice: dict, *, notify=print) -> None:
     save_meta(workdir, meta, notify=notify)
     with inside.open_dir(confine.root_of(workdir)) as top:
         inside.remove(top, "strip")
+
+
+def switch_to_screen(workdir: Path, *, notify=print) -> None:
+    """紙の楽譜として扱っていた動画の曲を、利用者の指定で画面のタブ譜にする。
+
+    paper/（候補・洗い出したパート・選んだ領域）は消さない。紙の楽譜に戻すと洗い出しからやり直すので、
+    上書きされる。パートを選んだ曲では、そのパートのチューニングとカポを持ち越さないよう、見出しを
+    6 弦の標準に戻す（元の見出しは履歴に残す）。
+    """
+    meta = load_meta(workdir)
+    if is_chosen(meta.get("paper")):
+        from videotab.build import DEFAULT_TUNING
+
+        _restart_tuning(workdir, meta, DEFAULT_TUNING, "楽譜の種類")
+    meta.pop("paper", None)
+    meta["source_choice"] = user_choice("video")
+    save_meta(workdir, meta, notify=notify)
 
 
 def selection(workdir: Path) -> dict:

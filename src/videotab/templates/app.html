@@ -111,14 +111,6 @@
     font: inherit; font-size: 0.86rem; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--line);
     background: var(--panel); color: var(--ink); min-width: 0; max-width: 100%;
   }
-  /* 紙の楽譜の段（動画を選んだときだけ出す楽譜の種類）も読み取りの段と同じ見た目にする */
-  .paper-pick[hidden] { display: none; }  /* .pick-row の flex より強くして、隠した段を出さない */
-  .paper-pick .pick { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--muted); min-width: 0; max-width: 100%; }
-  .paper-pick select {
-    font: inherit; font-size: 0.86rem; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--line);
-    background: var(--bg); color: var(--ink); min-width: 0; max-width: 100%;
-  }
-  .paper-pick select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   /* 読み取りのエージェントの切り替えは段の先頭に置き、高さをモデルの欄にそろえる */
   .engine-pick .seg { min-width: 0; }
   .engine-pick .seg label { padding: 7px 12px; }
@@ -136,7 +128,6 @@
     .pick-row .pick, .pick-row .pick-custom { flex: 1 1 100%; }
     .pick-row .pick > span { flex: none; width: 5.5em; }
     .picker .pick select { flex: 1 1 auto; width: auto; }
-    .paper-pick .pick select { flex: 1 1 auto; width: auto; }
     .picker .pick-custom { width: auto; }
   }
 
@@ -207,6 +198,8 @@
   }
   .retry-main select:focus, .retry-main input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   .retry-main .retry-note { flex-basis: 100%; font-size: 0.8rem; color: var(--muted); }
+  /* パート・弦数の欄は、楽譜の種類が紙の楽譜のときだけ出す（上の display より強くして隠す） */
+  .retry-main .pick[hidden], .retry-main .retry-note[hidden] { display: none; }
   .retry-go-row { display: flex; }
   button.retry-go { border-color: var(--accent); color: var(--accent); background: var(--panel); font-weight: 600; }
   button.retry-go:hover:not(:disabled) { background: var(--accent-soft); }
@@ -322,11 +315,6 @@
       <span class="drop-sub" id="drop-sub"></span>
       <span class="drop-note" id="drop-note"></span>
     </label>
-    <div class="pick-row paper-pick" id="paper-row" hidden>
-      <label class="pick"><span>楽譜の種類</span><select id="source-mode">
-        <option value="video">画面のタブ譜</option><option value="paper">紙の楽譜</option>
-      </select></label>
-    </div>
     <div class="pick-row">
       <div class="pick engine-pick"><span>読み取り</span>
         <div class="seg" role="radiogroup" aria-label="読み取りに使うエージェント" id="engines"></div>
@@ -957,8 +945,12 @@
     if (!c.ok) { row.picker.showError(c.message); return; }
     // モデルと推論の強さは、普段の設定（null）も含めて常に明示して送る
     var body = { step: step, engine: engine, model: c.value.model, effort: c.value.effort };
-    // パート欄が空なら paper を送らない（保存済みのパートのまま。選択待ちの曲は洗い出しからやり直す）
-    var part = row.paperPart ? row.paperPart.value.trim() : "";
+    // 楽譜の種類は動画の曲だけ送る。今の種類と違えば、サーバーが切り替えて帯と線の検出の段からやり直す
+    if (row.sourceMode) body.source_mode = row.sourceMode.value;
+    // パート欄が空なら paper を送らない（保存済みのパートのまま。選択待ちの曲は洗い出しからやり直す）。
+    // 画面のタブ譜としてやり直すときも送らない
+    var asPaper = row.paperPart && (!row.sourceMode || row.sourceMode.value === "paper");
+    var part = asPaper ? row.paperPart.value.trim() : "";
     if (part) body.paper = { part: part, strings: Number(row.paperStrings.value) };
     api("/api/jobs/" + encodeURIComponent(selected) + "/retry", body)
       .then(function () {
@@ -1101,19 +1093,49 @@
       el("div", { class: "pick-row" }, [picker.root]),
       goRow
     ]);
-    if (d.paper) {
-      // パートを選ぶ前の曲（part が null）では欄を空にする。空のまま送ると、洗い出しからやり直す
-      var unchosen = d.paper.part == null;
+    // 楽譜の種類（画面のタブ譜 / 紙の楽譜）は動画の曲だけに出す。帯と線の検出の段が見分けた結果が
+    // 違っていたときに、ここで変えてやり直す。写真・PDF・ZIP の曲はいつも紙の楽譜
+    var isVideo = d.source_kind !== "document";
+    if (isVideo || d.paper) {
+      var current = d.paper ? "paper" : "video";
+      var modeField = null;
+      if (isVideo) {
+        row.sourceMode = el("select", { "aria-label": "楽譜の種類" }, [
+          el("option", { value: "video", text: "画面のタブ譜" }), el("option", { value: "paper", text: "紙の楽譜" })
+        ]);
+        row.sourceMode.value = retryChoice.sourceMode || current;  // 今の値が初期値
+        modeField = el("label", { class: "pick" }, [el("span", { text: "楽譜の種類" }), row.sourceMode]);
+      }
+      // パートを選ぶ前の曲（part が null）と画面のタブ譜の曲では欄を空にする。空のまま送ると、洗い出しからやり直す
+      var unchosen = !d.paper || d.paper.part == null;
       row.paperPart = el("input", { value: unchosen ? "" : d.paper.part, maxlength: "200", "aria-label": "書き起こすパート" });
       if (unchosen) row.paperPart.setAttribute("placeholder", "空欄なら洗い出しから");
       row.paperStrings = stringsSelect();
-      row.paperStrings.value = d.paper.strings === 4 ? "4" : "6";  // まだ決まっていなければ 6
-      // パートと弦数は「やり直す」ボタンで送る値なので、ボタンの前に置く
+      if (d.paper) row.paperStrings.value = d.paper.strings === 4 ? "4" : "6";  // まだ決まっていなければ 6
+      var partField = el("label", { class: "pick" }, [el("span", { text: "パート" }), row.paperPart]);
+      var stringsField = el("label", { class: "pick" }, [el("span", { text: "弦数" }), row.paperStrings]);
+      var note = el("span", { class: "retry-note" });
+      // パート・弦数の欄は、楽譜の種類が紙の楽譜のときだけ出す
+      var syncPaperFields = function () {
+        var mode = row.sourceMode ? row.sourceMode.value : current;
+        var changed = mode !== current;
+        partField.hidden = stringsField.hidden = mode !== "paper";
+        if (changed) {
+          // 種類を変えると帯と線の検出の段からやり直すので、それより後の段を選んでいたら戻す
+          var stripStep = d.steps.findIndex(function (s) { return s.name === "strip"; });
+          if (stripStep >= 0 && sel.selectedIndex > stripStep) { sel.selectedIndex = stripStep; goLabel(); }
+        }
+        note.textContent = changed
+          ? "楽譜の種類を変えると、帯と線の検出の段からやり直します。" + (mode === "paper" ? "パートが空欄なら、楽譜のパートを洗い出します" : "")
+          : mode === "paper" ? "パート・弦数を変えるとページ選択からやり直します。" + (unchosen ? "空欄のままなら洗い出しからやり直します" : "") : "";
+        note.hidden = !note.textContent;
+      };
+      if (row.sourceMode) row.sourceMode.addEventListener("change", function () { retryChoice.sourceMode = row.sourceMode.value; syncPaperFields(); });
+      syncPaperFields();
+      // 楽譜の種類・パート・弦数は「やり直す」ボタンで送る値なので、ボタンの前に置く（写真・PDF・ZIP の曲では
+      // modeField が無く、パートと弦数だけになる）
       row.el.insertBefore(el("div", { class: "retry-main" }, [
-        el("label", { class: "pick" }, [el("span", { text: "パート" }), row.paperPart]),
-        el("label", { class: "pick" }, [el("span", { text: "弦数" }), row.paperStrings]),
-        el("span", { class: "retry-note", text: "パート・弦数を変えるとページ選択からやり直します。" +
-          (unchosen ? "空欄のままなら洗い出しからやり直します" : "") })
+        modeField, partField, stringsField, note
       ]), goRow);
     }
     return row;
@@ -1438,21 +1460,15 @@
     $("drop-text").textContent = chosen ? chosen.name + "（" + sizeText(chosen.size) + "）" : DROP_HINT;
     $("drop-sub").textContent = chosen ? DROP_SUB_CHOSEN : DROP_SUB;
   }
-  function isDocument(f) { return !!f && /\.(png|jpe?g|pdf|zip)$/i.test(f.name); }
-  // 楽譜の種類は動画を選んだときだけ聞く（写真・PDF・ZIP はいつも紙の楽譜。中身から見分けられないのは動画だけ）。
-  // パートは画面では聞かず、紙の楽譜はいつも洗い出した一覧から選ぶ
-  function showPaperFields() {
-    if (isDocument(chosen)) $("source-mode").value = "paper";
-    $("paper-row").hidden = !chosen || isDocument(chosen);
-  }
+  // 楽譜の種類とパートは、ここでは聞かない。写真・PDF・ZIP はいつも紙の楽譜で、動画が画面のタブ譜か
+  // 紙を撮ったものかは、帯と線の検出の段が見分ける（違っていたら、詳細の「やり直す」で変える）。
+  // 紙の楽譜のパートは、いつも洗い出した一覧から選ぶ
   function choose(f) {
     if (!f || uploading) return;
     var problem = fileProblem(f);
     $("form-error").textContent = problem || "";
     if (problem) return;
     chosen = f;
-    $("source-mode").value = isDocument(f) ? "paper" : "video";  // 選び直したら、前のファイルの種類を持ち越さない
-    showPaperFields();
     showChosen();
   }
   $("file").addEventListener("change", function () { choose($("file").files[0]); $("file").value = ""; });
@@ -1486,8 +1502,6 @@
     var problem = fileProblem(chosen);
     if (problem) { $("form-error").textContent = problem; return; }
     var engine = checkedEngine();
-    showPaperFields();
-    var paperMode = $("source-mode").value === "paper";
     var c = newPicker ? newPicker.check() : { ok: true, value: { model: null, effort: null } };
     if (!c.ok) { newPicker.showError(c.message); return; }
     $("go").disabled = true;
@@ -1495,8 +1509,6 @@
     var params = new URLSearchParams();
     // 題名はサーバーがファイル名から付ける。題名・作成者・元動画のページは、曲の詳細の「曲の情報」で直せる
     var fields = { name: chosen.name, engine: engine, model: c.value.model, effort: c.value.effort };
-    // 紙の楽譜はパートを送らない（楽譜のパートを洗い出して、選択待ちで止まる）
-    if (paperMode) fields.source_mode = "paper";
     Object.keys(fields).forEach(function (k) { if (fields[k]) params.set(k, fields[k]); });
     var file = chosen;
     var xhr = new XMLHttpRequest();

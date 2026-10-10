@@ -208,6 +208,25 @@ def test_detail_shows_only_https_source_url(up):
         assert detail["source_url"] is None, bad
 
 
+def test_upload_records_source_choice_only_when_paper_is_given(up):
+    def meta_of(body):
+        return json.loads((up.root / body["id"] / "meta.json").read_text(encoding="utf-8"))
+
+    status, body = upload(up.base, source_mode="paper")
+    assert status == 201
+    meta = meta_of(body)
+    assert meta["paper"] == {"part": None, "strings": None} and meta["source_choice"] == {"mode": "paper", "by": "user"}
+    assert pipeline.Job(up.root / body["id"]).load()["source_mode"] == "paper"
+    for query in ({}, {"source_mode": "video"}):  # 指定の無い動画は、strip の段が見分ける
+        status, body = upload(up.base, **query)
+        assert status == 201
+        assert "source_choice" not in meta_of(body) and "paper" not in meta_of(body)
+        assert "source_mode" not in pipeline.Job(up.root / body["id"]).load()
+    before = everything(up.root)
+    status, body = upload(up.base, source_mode="nope")
+    assert status == 400 and "楽譜の種類" in body["error"] and everything(up.root) == before
+
+
 def test_page_has_file_picker_and_drop_and_no_link_input():
     from importlib import resources
 
