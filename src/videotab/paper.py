@@ -173,7 +173,10 @@ def prepare(workdir: Path) -> list[Frame]:
     """動画は 4 秒ごとの鮮明な候補、写真は全ページを一覧にする。元画像はすべて残す。"""
     frames = source_frames(workdir)
     if not frames:
-        raise ValueError("画像がありません（先に videotab frames）")
+        raise ValueError(
+            "切り出した画像がありません。画面では「やり直す」で「画像の切り出し」からやり直してください"
+            "（コマンドでは先に videotab frames を実行します）"
+        )
     still = load_meta(workdir).get("source_kind") == "document"
     buckets: dict[int, tuple[float, Frame]] = {}
     for f in frames:

@@ -612,7 +612,7 @@ def main(argv: list[str] | None = None) -> int:
 
     s = sub.add_parser("frames", help="動画を一定間隔の画像にする")
     s.add_argument("target", help="作業フォルダ（work/ 以下の ID かパス）")
-    s.add_argument("--from", dest="source", help="動画の代わりに取り込む画像フォルダか ZIP（komadori の書き出しなど）")
+    s.add_argument("--from", dest="source", help="動画の代わりに取り込む画像フォルダか ZIP（ファイル名が NNNN_MMmSSsmmm.png なら、その時刻を使う）")
     s.add_argument("--fps", type=float, default=1.0, help="1 秒あたりの枚数（既定 1）")
     s.add_argument("--force", action="store_true", help="既存の画像を消して作り直す")
     s.set_defaults(func=cmd_frames)

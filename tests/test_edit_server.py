@@ -460,7 +460,7 @@ def test_page_info_row_is_kept_between_refreshes():
     section = page_section("曲の情報")
     for text in ("曲の情報", "保存してタブ譜に反映", "保存する", "元に戻す", "https:// で始まる URL にしてください",
                  "空なら楽譜に出ません", "タブ譜に反映しています（読み取りはやり直しません）",
-                 "タブ譜には、続きを実行して組み立てたときに出ます"):  # fmt: skip
+                 "タブ譜には、組み立てるときに入ります"):  # fmt: skip
         assert text in section, text
     for word in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval"):
         assert word not in section, word

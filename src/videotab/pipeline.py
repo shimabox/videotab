@@ -50,7 +50,7 @@ REBUILD_FROM = "build"  # 曲の情報を書き換えたとき、組み立て直
 # videotab run が、紙の楽譜のパートの選択待ちで止まったときの終了コード（失敗の 1、strip.NO_TAB_EXIT の 3 と分ける）
 PART_WAIT_EXIT = 4
 # strip の段が紙を撮った動画と見分けた曲で、ログと結果欄に添える戻し方
-TO_SCREEN = "画面のタブ譜なら、やり直すの楽譜の種類を画面にしてください"
+TO_SCREEN = "画面のタブ譜の動画なら、画面の「やり直す」で「楽譜の種類」を「画面のタブ譜」にしてやり直してください"
 
 _file_lock = threading.Lock()
 # job.lock はリンクをたどらずに開く（リンクの先を作ったり書き換えたりしない）。
@@ -516,7 +516,8 @@ class Job:
                         self._discard_media()
                         raise StepError(
                             "タブ譜が写っていないと判断し、取り込んだ動画と画像を消しました。"
-                            "紙を撮った動画なら、videotab run 動画 --paper で取り込み直してください"
+                            "紙の楽譜を撮った動画なら、楽譜の写真か PDF を画面から取り込むか、"
+                            "ターミナルで videotab run 動画ファイル --paper を実行して取り込み直してください"
                         ) from None
                     # ffmpeg がない等、タブ譜の有無と関係のない失敗では消さない
                     if e.returncode != PAPER_EXIT or not load_meta(self.workdir).get("paper"):
@@ -581,7 +582,7 @@ class Job:
                 # 印とのずれは結果に残し、タブ譜の出力は止めない
                 return "動画の時刻と合わない所があります（ログを見てください）"
             if not has_marks:
-                return "照合していません（動画の時刻の印がありません）"
+                return "時刻は照合していません（照らし合わせる動画の時刻の目印がありません。タブ譜はできています）"
             return "動画の時刻と合っています"
         raise ValueError(name)
 

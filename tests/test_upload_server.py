@@ -135,7 +135,7 @@ def test_too_large_is_413_without_reading_body(up):
     ({"name": "notes.txt"}, "動画ファイル"),
     ({"name": ""}, "ファイル名"),
     ({"engine": "nope"}, "engine"),
-    ({"engine": "codex"}, "codex コマンドが見つかりません"),
+    ({"engine": "codex"}, "Codex が見つかりません"),
     ({"model": "a b"}, "モデル"),
     ({"effort": "minimal"}, "推論の強さ"),
     ({"source_url": "javascript:alert(1)"}, "元動画のページ"),

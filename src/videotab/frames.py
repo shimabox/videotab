@@ -20,7 +20,7 @@ MAX_IMAGE_BYTES = 64 * 1024 * 1024  # 取り込む画像 1 枚の大きさの上
 def ffmpeg_bin() -> str:
     found = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
     if not Path(found).exists():
-        raise SystemExit("ffmpeg が見つかりません（brew install ffmpeg）")
+        raise SystemExit("ffmpeg（動画を画像にするソフト）が見つかりません。ターミナルで brew install ffmpeg を実行して入れてください")
     return found
 
 
@@ -89,7 +89,7 @@ def extract(workdir: Path, fps: float = 1.0, force: bool = False) -> int:
 def import_folder(workdir: Path, src: Path, fps: float = 1.0, force: bool = False) -> int:
     """既存の画像フォルダか ZIP を frames/ に写す。
 
-    ファイル名が NNNN_MMmSSsmmm.png（komadori の書き出しと同じ規則）ならその時刻を使い、
+    ファイル名が NNNN_MMmSSsmmm.png ならその時刻を使い、
     違う名前なら並び順に fps 間隔の時刻を振る。
     """
     if not src.exists():

@@ -62,10 +62,10 @@ def test_fixture_leaves_nothing_to_pass():
         assert got.model is None and got.model_efforts == {} and got.effort is None and got.notes == ()
     claude = s.load_settings("claude")
     assert s.claude_settings_json(claude) is None
-    assert s.summary(claude) == "モデル CLI の既定・推論の強さ モデルの既定"
+    assert s.summary(claude) == "モデル Claude Code の標準・推論の強さ モデルの標準"
     codex = s.load_settings("codex")
     assert s.codex_args(codex) == []
-    assert s.summary(codex) == "モデル CLI の既定・推論の強さ CLI の既定"
+    assert s.summary(codex) == "モデル Codex の標準・推論の強さ Codex の標準"
 
 
 def test_claude_reads_model_and_model_settings_from_config_dir(tmp_path, monkeypatch):
@@ -211,9 +211,9 @@ def test_env_changes_display_but_not_json(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "low")
     got = s.load_settings("claude")
     assert s.claude_settings_json(got) == before
-    assert s.summary(got) == "モデル claude-sonnet-5（環境変数）・推論の強さ low（環境変数）"
+    assert s.summary(got) == "モデル claude-sonnet-5（環境変数で指定）・推論の強さ low（環境変数で指定）"
     # 設定が high でも、環境変数があれば起動ごとの行は環境変数
-    assert s.actual_text(got, "claude-opus-5-5") == "実際のモデル claude-opus-5-5・推論の強さ low（環境変数）"
+    assert s.actual_text(got, "claude-opus-5-5") == "実際のモデル claude-opus-5-5・推論の強さ low（環境変数で指定）"
 
 
 def test_env_values_failing_checks_are_not_shown(monkeypatch):
@@ -221,24 +221,24 @@ def test_env_values_failing_checks_are_not_shown(monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "ultra")
     got = s.load_settings("claude")
     assert got.env_model_set and got.env_model is None and got.env_effort_set and got.env_effort is None
-    assert s.summary(got) == "モデル（環境変数）・推論の強さ（環境変数）"
-    assert s.actual_text(got, "claude-opus-5-5") == "実際のモデル claude-opus-5-5・推論の強さ（環境変数）"
+    assert s.summary(got) == "モデル（環境変数で指定）・推論の強さ（環境変数で指定）"
+    assert s.actual_text(got, "claude-opus-5-5") == "実際のモデル claude-opus-5-5・推論の強さ（環境変数で指定）"
     assert "ultra" not in s.start_line(got) and "bad" not in s.start_line(got)
 
 
 def test_env_max_effort_is_shown(monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "max")
     got = s.load_settings("claude")
-    assert "推論の強さ max（環境変数）" in s.start_line(got)
-    assert s.actual_text(got, "claude-opus-5-5").endswith("推論の強さ max（環境変数）")
+    assert "推論の強さ max（環境変数で指定）" in s.start_line(got)
+    assert s.actual_text(got, "claude-opus-5-5").endswith("推論の強さ max（環境変数で指定）")
 
 
 def test_actual_text_matches_model_settings_exactly(tmp_path, monkeypatch):
     write_claude(tmp_path, monkeypatch, {"modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}}})
     got = s.load_settings("claude")
     assert s.actual_text(got, "claude-opus-5-5") == "実際のモデル claude-opus-5-5・推論の強さ xhigh（普段の設定）"
-    assert s.actual_text(got, "claude-opus-5-5[1m]") == "実際のモデル claude-opus-5-5[1m]・推論の強さ モデルの既定"
-    assert s.start_line(got) == "読み取りの設定: Claude Code・モデル CLI の既定・推論の強さはモデルごとの普段の設定"
+    assert s.actual_text(got, "claude-opus-5-5[1m]") == "実際のモデル claude-opus-5-5[1m]・推論の強さ モデルの標準"
+    assert s.start_line(got) == "読み取りの設定: Claude Code・モデル Claude Code の標準・推論の強さはモデルごとの普段の設定"
 
 
 # --- Codex
@@ -259,7 +259,7 @@ def test_codex_reads_default_location(tmp_path, monkeypatch):
     (tmp_path / ".codex" / "config.toml").write_text('model_reasoning_effort = "low"\n', encoding="utf-8")
     got = s.load_settings("codex")
     assert (got.model, got.effort) == (None, "low")
-    assert s.summary(got) == "モデル CLI の既定・推論の強さ low（普段の設定）"
+    assert s.summary(got) == "モデル Codex の標準・推論の強さ low（普段の設定）"
 
 
 def test_codex_profiles_are_ignored(tmp_path, monkeypatch):

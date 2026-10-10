@@ -162,9 +162,10 @@ class App:
         if engine is None:
             return
         if engine not in ENGINES:
-            raise ValueError("engine が違います")
+            raise ValueError("読み取りに使う AI の指定（engine）が違います")
         if not available_engines()[engine]:
-            raise ValueError(f"{engine} コマンドが見つかりません（入れてログインしてから使ってください）")
+            name = agent_settings.ENGINE_NAMES[engine]
+            raise ValueError(f"{name} が見つかりません。{name} を入れてログインしたあと、videotab を起動し直してください")
 
     def check_upload(
         self,
@@ -255,7 +256,7 @@ class App:
 
         self._check_engine(engine)
         if step is not None and step not in STEP_NAMES:
-            raise ValueError("step が違います")
+            raise ValueError("やり直す段の指定（step）が違います")
         if source_mode is not None and not (isinstance(source_mode, str) and source_mode in ("video", "paper")):
             raise ValueError("楽譜の種類が違います")
         fields = fields or {}
@@ -344,7 +345,9 @@ class App:
                 raise ValueError("パートの選択待ちの曲ではありません")
             names = [p["name"] for p in paper.load_parts(job.workdir) if p["tab"]]
             if not names:
-                raise ValueError("楽譜で見つかったパートの一覧を読めません。「やり直す」で洗い出しからやり直してください")
+                raise ValueError(
+                    "楽譜で見つかったパートの一覧を読めません。「やり直す」で「ページとパートの選択」からやり直してください"
+                )
             if not isinstance(part, str) or part not in names:
                 raise ValueError("一覧にある、TAB のあるパートを選んでください")
             selected = paper.options(part, strings)
@@ -370,7 +373,10 @@ class App:
                 self.running_job.cancel.cancel()
                 return
         if Job(self.root / job_id).is_locked():
-            raise Busy("別の videotab（videotab run など）で実行中なので、画面からは止められません")
+            raise Busy(
+                "ターミナルで動かしている別の videotab（videotab run など）が実行中なので、画面からは止められません。"
+                "止めるときは、そのターミナルで control + C を押してください"
+            )
         raise ValueError("実行中でも順番待ちでもありません")
 
     def _stopping(self, job_id: str) -> bool:
@@ -814,7 +820,8 @@ def make_handler(app: App):
 
         def do_GET(self):
             if not self._local_host():
-                return self._error(HTTPStatus.FORBIDDEN, "127.0.0.1 か localhost で開いてください")
+                port = self.server.server_address[1]
+                return self._error(HTTPStatus.FORBIDDEN, f"このアドレスでは開けません。ブラウザで http://127.0.0.1:{port}/ を開いてください")
             path = unquote(urlparse(self.path).path)
             if path == "/":
                 return self._send(200, page, "text/html; charset=utf-8", PAGE_HEADERS)
@@ -868,13 +875,13 @@ def make_handler(app: App):
             raw = self.headers.get("Content-Length")
             if raw is None:
                 if required:
-                    return HTTPStatus.LENGTH_REQUIRED, "本文の大きさ（Content-Length）がありません"
+                    return HTTPStatus.LENGTH_REQUIRED, "送られた内容の大きさがわかりません（Content-Length がありません）"
                 return 0
             if not re.fullmatch(r"[0-9]+", raw.strip()):
-                return HTTPStatus.BAD_REQUEST, "本文の大きさ（Content-Length）が数字ではありません"
+                return HTTPStatus.BAD_REQUEST, "送られた内容の大きさがわかりません（Content-Length が数字ではありません）"
             length = int(raw)
             if length > limit:
-                return HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"大きすぎます（{_size_text(limit)} まで）"
+                return HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"送る内容が大きすぎます（{_size_text(limit)} まで）"
             return length
 
         def do_POST(self):
@@ -913,7 +920,11 @@ def make_handler(app: App):
             except ValueError as e:  # 入力の項目の誤り（読む前）と、動画として読めない（add.NotVideo）
                 return self._error(400, str(e))
             except (OSError, SystemExit) as e:  # ffprobe が無い・書けないなど
-                return self._error(500, f"取り込めませんでした（{inside.reason(e)}）")
+                if isinstance(e, SystemExit):
+                    return self._error(500, f"取り込めませんでした。{inside.reason(e)}")
+                return self._error(
+                    500, f"取り込めませんでした。Mac の空き容量を確かめて、もう一度送ってください（{inside.reason(e)}）"
+                )
             return self._json({"id": job_id}, 201)
 
         def _job_action(self, path: str, action: str):
@@ -925,9 +936,9 @@ def make_handler(app: App):
             try:
                 body = json.loads(self.rfile.read(length) or b"{}")
             except (json.JSONDecodeError, UnicodeDecodeError):
-                return self._error(400, "JSON が読めません")
+                return self._error(400, "送られた内容を読めません（JSON として読めません）")
             if not isinstance(body, dict):
-                return self._error(400, "JSON の形が違います")
+                return self._error(400, "送られた内容の形が違います（JSON の形が違います）")
             job_id = path.removeprefix("/api/jobs/").removesuffix(f"/{action}")
             if not ID_PATTERN.fullmatch(job_id):
                 return self._error(404, "ありません")
@@ -958,7 +969,7 @@ def make_handler(app: App):
             except ValueError as e:
                 return self._error(400, str(e))
             except (Exception, SystemExit) as e:  # noqa: BLE001 - job.json を書けないなどを画面に返す
-                return self._error(500, f"{type(e).__name__}: {e}")
+                return self._error(500, f"うまくいきませんでした。少し待ってから、もう一度試してください（{type(e).__name__}: {e}）")
             return self._json(result)
 
         def do_DELETE(self):
@@ -974,9 +985,11 @@ def make_handler(app: App):
             except KeyError:
                 return self._error(404, "ありません")
             except Busy as e:
-                return self._error(409, f"消せません: {e}")
+                return self._error(409, f"消せません（{e}）")
             except Exception as e:  # noqa: BLE001 - 消す途中の失敗を画面に返す
-                return self._error(500, f"消す途中で失敗しました: {type(e).__name__}: {e}")
+                return self._error(
+                    500, f"消す途中で失敗しました。もう一度「この曲を消す」を押してください（{type(e).__name__}: {e}）"
+                )
             return self._json({"deleted": job_id})
 
     return Handler

@@ -271,7 +271,7 @@ def test_read_step_passes_user_settings_to_every_launch(tmp_path, monkeypatch, e
 
 
 def test_first_actual_model_is_shown_and_kept(tmp_path, monkeypatch):
-    actual = {lb: f"実際のモデル model-{lb}・推論の強さ モデルの既定" for lb in ("A", "B", "まとめ役")}
+    actual = {lb: f"実際のモデル model-{lb}・推論の強さ モデルの標準" for lb in ("A", "B", "まとめ役")}
     job, fake = run_read(tmp_path, monkeypatch, fake=SnapshotAgent(actual))
     at_resolve = dict(fake.messages)["まとめ役"]
     assert at_resolve in (actual["A"], actual["B"])  # 読み手は並行なので、先に分かった方
@@ -282,9 +282,9 @@ def test_read_step_without_settings_uses_defaults(tmp_path, monkeypatch):
     job, fake = run_read(tmp_path, monkeypatch)
     assert all(got == AgentSettings("claude") for _, got in fake.settings)
     log = job.log_tail(1000)
-    assert any(line.endswith("読み取りの設定: Claude Code・モデル CLI の既定・推論の強さ モデルの既定") for line in log)
+    assert any(line.endswith("読み取りの設定: Claude Code・モデル Claude Code の標準・推論の強さ モデルの標準") for line in log)
     assert not any("ユーザー設定" in line for line in log)  # 注意書きは出ない
-    assert read_message(job) == "モデル CLI の既定・推論の強さ モデルの既定"
+    assert read_message(job) == "モデル Claude Code の標準・推論の強さ モデルの標準"
 
 
 def test_read_step_with_unusable_settings_still_reads(tmp_path, monkeypatch):
@@ -321,7 +321,7 @@ def test_retry_reads_settings_again_and_follows_engine(tmp_path, monkeypatch):
     assert read_message(job) is None  # やり直すと結果欄は消える
     assert job.run()
     assert {got.model for _, got in fake.settings} == {"sonnet"}
-    assert read_message(job) == "モデル sonnet（普段の設定）・推論の強さ モデルの既定"
+    assert read_message(job) == "モデル sonnet（普段の設定）・推論の強さ モデルの標準"
 
     use_claude_settings(tmp_path, monkeypatch, "{broken")  # もう一方のエンジンの設定は読まない
     job.log_path.write_text("", encoding="utf-8")
@@ -330,7 +330,7 @@ def test_retry_reads_settings_again_and_follows_engine(tmp_path, monkeypatch):
     assert fake.settings and all(got == AgentSettings("codex", model="gpt-6-astra") for _, got in fake.settings)
     log = job.log_tail(1000)
     assert not any("Claude Code" in line for line in log)
-    assert any(line.endswith("読み取りの設定: Codex・モデル gpt-6-astra（普段の設定）・推論の強さ CLI の既定") for line in log)
+    assert any(line.endswith("読み取りの設定: Codex・モデル gpt-6-astra（普段の設定）・推論の強さ Codex の標準") for line in log)
 
 
 def test_read_step_adds_no_job_keys_and_reads_settings_once(tmp_path, monkeypatch):
@@ -635,13 +635,13 @@ def test_video_judged_as_paper_continues_to_part_listing_in_the_same_step(tmp_pa
     assert steps["strip"]["status"] == "pending" and steps["pages"]["status"] == "pending"
     message = steps["strip"]["message"]
     assert message.startswith("紙を撮った動画と判断") and message.endswith("パートの選択待ち（TAB あり 1 / 全 1）")
-    assert "やり直すの楽譜の種類を画面にしてください" in message
+    assert "画面の「やり直す」で「楽譜の種類」を「画面のタブ譜」にしてやり直してください" in message
     meta = load_meta(job.workdir)
     assert meta["paper"] == {"part": None, "strings": None} and meta["source_choice"] == PAPER_CHOICE
     assert "strip" not in meta and not (job.workdir / "strip").exists()
     log = "\n".join(job.log_tail(1000))
-    assert ("紙を撮った動画と判断しました（タブが見えたフレーム 7/24、補正で線が取れたフレーム 25/97）。"
-            "画面のタブ譜なら、やり直すの楽譜の種類を画面にしてください") in log  # fmt: skip
+    assert ("紙を撮った動画と判断しました（タブが見えた画像 7/24 枚、線の位置を補正できた画像 25/97 枚）。"
+            "画面のタブ譜の動画なら、画面の「やり直す」で「楽譜の種類」を「画面のタブ譜」にしてやり直してください") in log  # fmt: skip
     assert "楽譜で見つかったパート:" in log and "失敗" not in log
 
     # 洗い出しからやり直しても、検出はし直さず（紙の楽譜の曲になっている）、見分けたことは結果欄に残る
@@ -658,7 +658,7 @@ def test_video_judged_as_screen_shows_counts_in_strip_step(tmp_path, monkeypatch
     from videotab.workdir import load_meta
 
     job, detections, agents = judged_work(tmp_path, monkeypatch, detected(22))
-    assert job._run_step("strip", "claude") == "画面のタブ譜として検出（タブが見えたフレーム 22/24）"
+    assert job._run_step("strip", "claude") == "画面のタブ譜として検出（タブが見えた画像 22/24 枚）"
     meta = load_meta(job.workdir)
     assert "paper" not in meta and meta["strip"]["band"] == [240, 350] and "source_mode" not in job.load()
     assert meta["source_choice"] == {"mode": "video", "by": "auto", "tab_frames": [22, 24]}
@@ -666,7 +666,7 @@ def test_video_judged_as_screen_shows_counts_in_strip_step(tmp_path, monkeypatch
     # タブが見えたフレームが少ないときは、紙の楽譜への切り替え方を添える（補正なしなので画面のまま）
     monkeypatch.setattr(strip, "detect", lambda *args, **kwargs: detected(15))
     message = job._run_step("strip", "claude")
-    assert message.startswith("画面のタブ譜として検出（タブが見えたフレーム 15/24）") and "楽譜の種類を紙の楽譜に" in message
+    assert message.startswith("画面のタブ譜として検出（タブが見えた画像 15/24 枚）") and "「楽譜の種類」を「紙の楽譜」に" in message
     assert agents == []
 
     # 帯を指定した曲では見分けないので、今までどおり結果欄は空
@@ -681,7 +681,7 @@ def test_strip_step_through_the_real_command_reports_screen(tmp_path):
     wd = make_work(tmp_path, n_pages=2)
     job = pipeline.Job.create(wd)
     message = job._run_step("strip", "claude")  # 合成の画面のタブ譜を、本物の videotab strip で検出する
-    assert re.fullmatch(r"画面のタブ譜として検出（タブが見えたフレーム (\d+)/\1）", message), message
+    assert re.fullmatch(r"画面のタブ譜として検出（タブが見えた画像 (\d+)/\1 枚）", message), message
     meta = json.loads((wd / "meta.json").read_text(encoding="utf-8"))
     assert meta["source_choice"]["mode"] == "video" and "located_frames" not in meta["source_choice"]
     assert "paper" not in meta and any((wd / "strip").iterdir())
@@ -720,7 +720,7 @@ def test_no_tab_message_tells_how_to_import_paper_video_without_launching_agents
     assert not job.run()
     data = job.load()
     message = next(s for s in data["steps"] if s["name"] == "strip")["message"]
-    assert "取り込んだ動画と画像を消しました" in message and "videotab run 動画 --paper" in message
+    assert "取り込んだ動画と画像を消しました" in message and "videotab run 動画ファイル --paper" in message
     assert data["status"] == "failed" and "source_mode" not in data
     assert not (wd / "video.mp4").exists() and not (wd / "frames").exists()
 
@@ -736,7 +736,7 @@ def test_run_step_strip_screen_turns_judged_paper_back_into_screen_and_finishes(
     argv = ["run", wd.name, "--root", str(wd.parent)]
     assert cli.main(argv) == pipeline.PART_WAIT_EXIT  # 紙を撮った動画と見分けられて、パートの選択待ちで止まる
     assert load_meta(wd)["source_choice"] == PAPER_CHOICE and job.load()["source_mode"] == "paper"
-    assert "画面のタブ譜なら、やり直すの楽譜の種類を画面にしてください" in capsys.readouterr().out
+    assert "画面のタブ譜の動画なら、画面の「やり直す」で「楽譜の種類」を「画面のタブ譜」にしてやり直してください" in capsys.readouterr().out
 
     assert cli.main([*argv, "--step", "strip", "--screen"]) == 0
     meta = load_meta(wd)

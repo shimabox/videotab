@@ -49,11 +49,11 @@ def test_thresholds_and_exit_code_do_not_collide():
 
 
 def test_screen_note_always_has_counts_and_adds_the_way_to_paper_when_unsure():
-    assert strip.source_note(detected(22)) == "画面のタブ譜として検出（タブが見えたフレーム 22/24）"
-    assert strip.source_note(detected(16)) == "画面のタブ譜として検出（タブが見えたフレーム 16/24）"  # ちょうど 2/3
+    assert strip.source_note(detected(22)) == "画面のタブ譜として検出（タブが見えた画像 22/24 枚）"
+    assert strip.source_note(detected(16)) == "画面のタブ譜として検出（タブが見えた画像 16/24 枚）"  # ちょうど 2/3
     unsure = strip.source_note(detected(15))
-    assert unsure.startswith("画面のタブ譜として検出（タブが見えたフレーム 15/24）")
-    assert "紙を撮った動画なら" in unsure and "やり直す" in unsure and "楽譜の種類を紙の楽譜に" in unsure
+    assert unsure.startswith("画面のタブ譜として検出（タブが見えた画像 15/24 枚）")
+    assert "紙の楽譜を撮った動画なら" in unsure and "やり直す" in unsure and "「楽譜の種類」を「紙の楽譜」に" in unsure
     assert strip.screen_note([22, 24]) == strip.source_note(detected(22))
     # meta.json は読み手も書けるので、形の違う値からは文を作らない
     for bad in (None, [22], [22, "24"], [True, 24], [25, 24], [-1, 24], "22/24", {"a": 1}):
@@ -63,7 +63,7 @@ def test_screen_note_always_has_counts_and_adds_the_way_to_paper_when_unsure():
 def test_judged_record_has_counts_and_located_frames_only_with_correction():
     assert strip.judged_source(detected(22), "video") == {"mode": "video", "by": "auto", "tab_frames": [22, 24]}
     assert strip.judged_source(detected(**PAPER_LIKE), "paper") == PAPER_CHOICE
-    assert strip.paper_counts(PAPER_CHOICE) == "タブが見えたフレーム 7/24、補正で線が取れたフレーム 25/97"
+    assert strip.paper_counts(PAPER_CHOICE) == "タブが見えた画像 7/24 枚、線の位置を補正できた画像 25/97 枚"
     for bad in (None, [], {"tab_frames": [7, 24]}, {**PAPER_CHOICE, "located_frames": "25/97"}):
         assert strip.paper_counts(bad) is None, bad
 
@@ -101,7 +101,7 @@ def test_strip_judged_as_paper_becomes_pending_paper_and_exits_with_paper_code(w
     assert load_meta(wd) == {**before, "paper": {"part": None, "strings": None}, "source_choice": PAPER_CHOICE}
     assert not (wd / "strip").exists() and len(list_frames(wd)) == 3
     out = capsys.readouterr().out
-    assert "紙を撮った動画と判断しました（タブが見えたフレーム 7/24、補正で線が取れたフレーム 25/97）" in out
+    assert "紙を撮った動画と判断しました（タブが見えた画像 7/24 枚、線の位置を補正できた画像 25/97 枚）" in out
     assert f"videotab run {wd.name} --root {wd.parent.resolve()} --step strip（パートの洗い出し）" in out
     assert "--step strip --screen" in out and "videotab pages" not in out
 

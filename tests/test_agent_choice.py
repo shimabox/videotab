@@ -183,25 +183,25 @@ def test_summary_and_lines_show_choice_first(monkeypatch):
     assert s.summary(env) == "モデル opus（videotab で指定）・推論の強さ max（videotab で指定）"
     assert s.actual_text(env, "claude-opus-5-5").endswith("推論の強さ max（videotab で指定）")
     effort_only = s.apply_choice(s.load_settings("claude"), Choice(None, "high"))
-    assert s.summary(effort_only) == "モデル claude-haiku-4-5（環境変数）・推論の強さ high（videotab で指定）"
+    assert s.summary(effort_only) == "モデル claude-haiku-4-5（環境変数で指定）・推論の強さ high（videotab で指定）"
 
 
 def test_usual_labels(tmp_path, monkeypatch):
     assert s.usual_labels(AgentSettings("claude")) == {
-        "model": "CLI の既定", "effort": "モデルの既定", "effort_with_model": "モデルの既定"}  # fmt: skip
-    assert s.usual_labels(USUAL_CLAUDE) == {"model": "opus", "effort": "モデルごと", "effort_with_model": "モデルごと"}
+        "model": "Claude Code の標準", "effort": "モデルの標準", "effort_with_model": "モデルの標準"}  # fmt: skip
+    assert s.usual_labels(USUAL_CLAUDE) == {"model": "opus", "effort": "モデルごとの設定", "effort_with_model": "モデルごとの設定"}
     exact = AgentSettings("claude", model="claude-opus-5-5", model_efforts={"claude-opus-5-5": "xhigh"})
-    assert s.usual_labels(exact) == {"model": "claude-opus-5-5", "effort": "xhigh", "effort_with_model": "モデルごと"}
-    assert s.usual_labels(AgentSettings("codex")) == {"model": "CLI の既定", "effort": "CLI の既定"}
+    assert s.usual_labels(exact) == {"model": "claude-opus-5-5", "effort": "xhigh", "effort_with_model": "モデルごとの設定"}
+    assert s.usual_labels(AgentSettings("codex")) == {"model": "Codex の標準", "effort": "Codex の標準"}
     assert s.usual_labels(USUAL_CODEX) == {"model": "gpt-6-astra", "effort": "high"}
     monkeypatch.setenv("ANTHROPIC_MODEL", "claude-sonnet-5")
     monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "max")
     assert s.usual_labels(s.load_settings("claude")) == {
-        "model": "環境変数 claude-sonnet-5", "effort": "環境変数 max", "effort_with_model": "環境変数 max"}  # fmt: skip
+        "model": "claude-sonnet-5・環境変数で指定", "effort": "max・環境変数で指定", "effort_with_model": "max・環境変数で指定"}  # fmt: skip
     monkeypatch.setenv("ANTHROPIC_MODEL", "bad model")
     monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "ultra")
     assert s.usual_labels(s.load_settings("claude")) == {
-        "model": "環境変数", "effort": "環境変数", "effort_with_model": "環境変数"}  # fmt: skip
+        "model": "環境変数で指定", "effort": "環境変数で指定", "effort_with_model": "環境変数で指定"}  # fmt: skip
 
 
 def test_agent_options_show_only_checked_values(tmp_path, monkeypatch):
@@ -213,7 +213,7 @@ def test_agent_options_show_only_checked_values(tmp_path, monkeypatch):
         "claude": {
             "models": ["opus", "sonnet", "fable", "haiku"],
             "efforts": ["low", "medium", "high", "xhigh", "max"],
-            "usual": {"model": "opus", "effort": "モデルごと", "effort_with_model": "モデルごと"},
+            "usual": {"model": "opus", "effort": "モデルごとの設定", "effort_with_model": "モデルごとの設定"},
         },
         "codex": {
             "models": None,

@@ -103,7 +103,7 @@ def receive(stream: BinaryIO, length: int, name: str, root: Path, **fields) -> P
                         if not 0 < len(images) <= MAX_PAGES:
                             raise ValueError(f"画像の ZIP は 1〜{MAX_PAGES} ページにしてください")
                         if sum(m.file_size for m in images) > MAX_EXPANDED_BYTES:
-                            raise ValueError("ZIP の画像の合計が大きすぎます（展開後 1 GB まで）")
+                            raise ValueError("ZIP の中の画像が大きすぎます（ZIP の中の画像の合計は 1 GB まで）")
                     frames.import_folder(stage.path, source)
                 except (zipfile.BadZipFile, RuntimeError, SystemExit) as e:
                     raise ValueError(f"画像の ZIP を読めません: {e}") from None

@@ -51,7 +51,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
-from videotab.agent_settings import AgentSettings, actual_text, claude_args, codex_args, removed_env, valid_model, validate
+from videotab.agent_settings import ENGINE_NAMES, AgentSettings, actual_text, claude_args, codex_args, removed_env, valid_model, validate
 from videotab.cancel import Cancel, Cancelled, stop
 
 ENGINES = ("claude", "codex")
@@ -289,7 +289,8 @@ def _run_agent(
     if settings is not None:
         validate(settings, engine)
     if shutil.which(engine) is None:
-        raise RuntimeError(f"{engine} コマンドが見つかりません")
+        name = ENGINE_NAMES.get(engine, engine)
+        raise RuntimeError(f"{name} が見つかりません。{name} を入れてログインしたあと、videotab を起動し直してください")
     if cancel is not None:
         cancel.check()
     if engine == "codex" and images:

@@ -213,9 +213,12 @@ def screen_note(tab_frames) -> str | None:
     if counts is None:
         return None
     with_tab, used = counts
-    note = f"画面のタブ譜として検出（タブが見えたフレーム {with_tab}/{used}）"
+    note = f"画面のタブ譜として検出（タブが見えた画像 {with_tab}/{used} 枚）"
     if used and with_tab / used < UNSURE_TAB_RATIO:
-        note += "。タブが見えたフレームが少ないので、紙を撮った動画なら「やり直す」で楽譜の種類を紙の楽譜にしてください"
+        note += (
+            "。タブが見えた画像が少ないので、紙の楽譜を撮った動画なら、画面の「やり直す」で"
+            "「楽譜の種類」を「紙の楽譜」にしてやり直してください"
+        )
     return note
 
 
@@ -231,7 +234,7 @@ def paper_counts(choice) -> str | None:
     tab, located = frame_counts(choice.get("tab_frames")), frame_counts(choice.get("located_frames"))
     if tab is None or located is None:
         return None
-    return f"タブが見えたフレーム {tab[0]}/{tab[1]}、補正で線が取れたフレーム {located[0]}/{located[1]}"
+    return f"タブが見えた画像 {tab[0]}/{tab[1]} 枚、線の位置を補正できた画像 {located[0]}/{located[1]} 枚"
 
 
 def sample_frames(frames: list[Frame], n: int = 24) -> list[Frame]:

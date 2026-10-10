@@ -96,7 +96,7 @@ def test_server_page_and_job_flow(running_server):
     assert upload(base, engine="nope")[0] == 400
     assert json.loads(call(base + "/api/jobs")[1])["engines"] == {"claude": True, "codex": False}
     status, body = upload(base, engine="codex")
-    assert status == 400 and "codex コマンドが見つかりません" in body["error"]
+    assert status == 400 and "Codex が見つかりません" in body["error"]
     assert sorted(p.name for p in root.iterdir() if not p.name.startswith(".")) == [job_id]  # 断ったものは残らない
 
 def test_server_serves_only_files_inside_the_work_folder(running_server):
@@ -798,11 +798,12 @@ def test_retry_row_has_title_named_fields_and_button_saying_the_step():
 
     page = resources.files("videotab").joinpath("templates", "app.html").read_text(encoding="utf-8")
     build = page_section("一覧と詳細").split("function buildRetryRow(")[1].split("\n  }\n\n")[0]
-    # 見出しと、段とエージェントの名前。段の選択肢は段の名前だけで、読み上げ名は前のまま
+    # 見出しと、段と AI の名前。段の選択肢は段の名前だけ（説明は title）で、読み上げ名は見える名前とそろえる
     assert 'el("span", { class: "info-title", text: "やり直す" })' in build
     assert 'text: "どの段から" }), sel]' in build and 'text: "読み取りに使う AI" }), eng]' in build
-    assert 'el("option", { value: s.name, text: s.label })' in build
-    assert '"aria-label": "やり直す段"' in build and '"aria-label": "読み取りに使うエージェント"' in build
+    assert 'withHelp(el("option", { value: s.name, text: s.label }), s.label)' in build
+    assert '"aria-label": "やり直す段"' in build and '"aria-label": "読み取りに使う AI"' in build
+    assert "エージェント" not in build
     assert "やり直す:" not in build and '"実行"' not in build and '" から"' not in build
     # ボタンは選んだ段を言い、初めにも段を変えたときにも文言を作る。押すと選んだ段からやり直す
     assert 'go.textContent = (o ? o.textContent : "") + "からやり直す"' in build
@@ -1061,3 +1062,17 @@ def test_uploaded_document_is_recorded_as_paper_chosen_by_user(idle_app):
     job_id = idle_app.receive(io.BytesIO(raw.getvalue()), len(raw.getvalue()), "score.png", "claude")
     meta = json.loads((idle_app.root / job_id / "meta.json").read_text(encoding="utf-8"))
     assert meta["source_kind"] == "document" and meta["paper"] == PENDING and meta["source_choice"] == USER_PAPER
+
+
+def test_picker_explains_model_and_effort_and_sends_effort_values_unchanged():
+    from importlib import resources
+
+    section = page_section("読み取りのモデルと推論の強さ")
+    # 推論の強さの選択肢は、送る値（英語）のまま、表示にだけ日本語の強弱を添える
+    assert 'el("option", { value: v, text: effortText(v) })' in section
+    assert "title: MODEL_HELP" in section and "title: EFFORT_HELP" in section
+    page = resources.files("videotab").joinpath("templates", "app.html").read_text(encoding="utf-8")
+    assert 'minimal: "最も弱い"' in page and 'max: "最も強い"' in page
+    # 通信の失敗は、ブラウザの英語の原文を括弧に回し、日本語の説明と次の操作を先に出す
+    assert "サーバーに届きません" not in page
+    assert 'function errorText(e) { return e.status ? e.message : OFFLINE + "（" + e.message + "）"; }' in page

@@ -140,7 +140,10 @@ def find_video(workdir: Path) -> Path | None:
 def ffprobe_bin() -> str:
     found = shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe"
     if not Path(found).exists():
-        raise SystemExit("ffprobe が見つかりません（ffmpeg を入れると一緒に入ります）")
+        raise SystemExit(
+            "ffprobe が見つかりません。ffprobe は ffmpeg（動画を画像にするソフト）と一緒に入ります。"
+            "ターミナルで brew install ffmpeg を実行して入れてください"
+        )
     return found
 
 
