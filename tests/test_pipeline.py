@@ -574,3 +574,161 @@ def test_pipeline_passes_given_band_to_strip(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline.Job, "_cli", lambda self, *args: seen.append(args))
     job._run_step("strip", "claude")
     assert seen == [("strip", str(wd.resolve()), "--band", "200", "355")]
+
+
+# --- 画面のタブ譜か、紙を撮った動画かを strip の段で見分ける
+
+
+def judged_work(tmp_path, monkeypatch, result):
+    """切り出し済みの動画の曲。strip.detect は result を返し、コマンドは同じプロセスで実行する。
+    読み手は起動すると失敗し、パートの洗い出しは 1 パートを書く。起動された担当の名前のリストも返す。"""
+    from videotab import paper
+
+    wd = make_work(tmp_path, n_pages=1)
+    detections, agents = [], []
+
+    def detect(frames, n_samples=24, band=None):
+        detections.append(band)
+        return result
+
+    def run_cli(self, *argv):
+        code = cli.main(list(argv))
+        if code:
+            raise pipeline.StepError(f"{argv[0]} が失敗しました", code)
+
+    def paper_agent(prompt, *, writable, label, **kwargs):
+        agents.append(label)
+        assert [p.name for p in writable] == ["parts.json"]
+        writable[0].write_text(json.dumps({"parts": [{"name": "Guitar I", "tab": True, "strings": 6}]}))
+        return AgentResult(True, "1 つのパートを見つけました", 0.1)
+
+    def no_reader(*args, **kwargs):
+        raise AssertionError("読み手は起動しない")
+
+    monkeypatch.setattr(strip, "detect", detect)
+    monkeypatch.setattr(pipeline.Job, "_cli", run_cli)
+    monkeypatch.setattr(paper, "run_agent", paper_agent)
+    monkeypatch.setattr(read, "run_agent", no_reader)
+    job = pipeline.Job.create(wd)
+    job.update_step("add", status="done")
+    job.update_step("frames", status="done")
+    return job, detections, agents
+
+
+def test_video_judged_as_paper_continues_to_part_listing_in_the_same_step(tmp_path, monkeypatch):
+    from test_source_judge import PAPER_CHOICE, PAPER_LIKE, detected
+
+    from videotab.workdir import load_meta
+
+    job, detections, agents = judged_work(tmp_path, monkeypatch, detected(**PAPER_LIKE))
+    assert "source_mode" not in job.load()
+    assert job.run() is False
+    data = job.load()
+    steps = {s["name"]: s for s in data["steps"]}
+    assert data["status"] == "waiting" and data["source_mode"] == "paper"
+    assert [s["name"] for s in data["steps"]] == pipeline.STEP_NAMES  # 段は増やさない
+    assert detections == [None] and agents == ["パートの洗い出し"]
+    assert steps["strip"]["status"] == "pending" and steps["pages"]["status"] == "pending"
+    message = steps["strip"]["message"]
+    assert message.startswith("紙を撮った動画と判断") and message.endswith("パートの選択待ち（TAB あり 1 / 全 1）")
+    assert "やり直すの楽譜の種類を画面にしてください" in message
+    meta = load_meta(job.workdir)
+    assert meta["paper"] == {"part": None, "strings": None} and meta["source_choice"] == PAPER_CHOICE
+    assert "strip" not in meta and not (job.workdir / "strip").exists()
+    log = "\n".join(job.log_tail(1000))
+    assert ("紙を撮った動画と判断しました（タブが見えたフレーム 7/24、補正で線が取れたフレーム 25/97）。"
+            "画面のタブ譜なら、やり直すの楽譜の種類を画面にしてください") in log  # fmt: skip
+    assert "楽譜で見つかったパート:" in log and "失敗" not in log
+
+    # 洗い出しからやり直しても、検出はし直さず（紙の楽譜の曲になっている）、見分けたことは結果欄に残る
+    job.reset_from("strip")
+    assert job.run() is False
+    assert detections == [None] and agents == ["パートの洗い出し"] * 2
+    assert job.load()["status"] == "waiting"
+    assert next(s for s in job.load()["steps"] if s["name"] == "strip")["message"] == message
+
+
+def test_video_judged_as_screen_shows_counts_in_strip_step(tmp_path, monkeypatch):
+    from test_source_judge import detected
+
+    from videotab.workdir import load_meta
+
+    job, detections, agents = judged_work(tmp_path, monkeypatch, detected(22))
+    assert job._run_step("strip", "claude") == "画面のタブ譜として検出（タブが見えたフレーム 22/24）"
+    meta = load_meta(job.workdir)
+    assert "paper" not in meta and meta["strip"]["band"] == [240, 350] and "source_mode" not in job.load()
+    assert meta["source_choice"] == {"mode": "video", "by": "auto", "tab_frames": [22, 24]}
+
+    # タブが見えたフレームが少ないときは、紙の楽譜への切り替え方を添える（補正なしなので画面のまま）
+    monkeypatch.setattr(strip, "detect", lambda *args, **kwargs: detected(15))
+    message = job._run_step("strip", "claude")
+    assert message.startswith("画面のタブ譜として検出（タブが見えたフレーム 15/24）") and "楽譜の種類を紙の楽譜に" in message
+    assert agents == []
+
+    # 帯を指定した曲では見分けないので、今までどおり結果欄は空
+    monkeypatch.setattr(strip, "detect", lambda *args, **kwargs: detected(22))
+    assert cli.main(["strip", str(job.workdir), "--band", "200", "355"]) == 0
+    assert job._run_step("strip", "claude") is None
+
+
+def test_strip_step_through_the_real_command_reports_screen(tmp_path):
+    import re
+
+    wd = make_work(tmp_path, n_pages=2)
+    job = pipeline.Job.create(wd)
+    message = job._run_step("strip", "claude")  # 合成の画面のタブ譜を、本物の videotab strip で検出する
+    assert re.fullmatch(r"画面のタブ譜として検出（タブが見えたフレーム (\d+)/\1）", message), message
+    meta = json.loads((wd / "meta.json").read_text(encoding="utf-8"))
+    assert meta["source_choice"]["mode"] == "video" and "located_frames" not in meta["source_choice"]
+    assert "paper" not in meta and any((wd / "strip").iterdir())
+
+
+def test_paper_chosen_by_user_is_not_judged(tmp_path, monkeypatch):
+    from test_source_judge import detected
+
+    from videotab import paper
+    from videotab.workdir import load_meta
+
+    job, detections, agents = judged_work(tmp_path, monkeypatch, detected(22))  # 画面のタブ譜に見える結果
+    paper.switch_to_paper(job.workdir, paper.user_choice("paper"))
+    assert job.run() is False
+    data = job.load()
+    assert data["status"] == "waiting" and data["source_mode"] == "paper"
+    assert detections == [] and agents == ["パートの洗い出し"]
+    strip_step = next(s for s in data["steps"] if s["name"] == "strip")
+    assert strip_step["message"] == "パートの選択待ち（TAB あり 1 / 全 1）"  # 今までどおり
+    assert load_meta(job.workdir)["source_choice"] == {"mode": "paper", "by": "user"}
+    assert "紙を撮った動画と判断" not in "\n".join(job.log_tail(1000))
+
+
+def test_no_tab_message_tells_how_to_import_paper_video_without_launching_agents(tmp_path, monkeypatch):
+    from videotab import paper
+
+    def no_agent(*args, **kwargs):
+        raise AssertionError("タブ譜が写っていない動画でエージェントを起動しない")
+
+    monkeypatch.setattr(paper, "run_agent", no_agent)
+    monkeypatch.setattr(read, "run_agent", no_agent)
+    wd = make_notab_work(tmp_path)
+    job = pipeline.Job.create(wd)
+    job.update_step("add", status="done")
+    job.update_step("frames", status="done")
+    assert not job.run()
+    data = job.load()
+    message = next(s for s in data["steps"] if s["name"] == "strip")["message"]
+    assert "取り込んだ動画と画像を消しました" in message and "videotab run 動画 --paper" in message
+    assert data["status"] == "failed" and "source_mode" not in data
+    assert not (wd / "video.mp4").exists() and not (wd / "frames").exists()
+
+
+def test_paper_exit_code_without_paper_setting_is_a_failure(tmp_path, monkeypatch):
+    wd = make_work(tmp_path, n_pages=1)
+    job = pipeline.Job.create(wd)
+
+    def broken(self, *args):
+        raise pipeline.StepError("紙と判定したが、設定を書けなかった", strip.PAPER_EXIT)
+
+    monkeypatch.setattr(pipeline.Job, "_cli", broken)
+    with pytest.raises(pipeline.StepError, match="設定を書けなかった"):
+        job._run_step("strip", "claude")
+    assert "source_mode" not in job.load()

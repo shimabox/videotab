@@ -89,6 +89,30 @@ def configure_pending(workdir: Path, strings: int | None = None) -> None:
     save_meta(workdir, meta)
 
 
+def user_choice(mode: str) -> dict:
+    """利用者が決めた楽譜の種類を、meta.json の source_choice に残す形にする。mode は "video" か "paper"。
+
+    この記録がある曲では、strip の段が楽譜の種類を自動で見分けない。
+    """
+    return {"mode": mode, "by": "user"}
+
+
+def switch_to_paper(workdir: Path, choice: dict, *, notify=print) -> None:
+    """画面のタブ譜として扱っていた動画の曲を、パートを選ぶ前の紙の楽譜にする。
+
+    choice は meta.json の source_choice に残す記録（だれが紙と決めたか）。帯と線の検出結果
+    （meta.json の strip と strip/）は紙の楽譜では使わないので消す。strip/ がリンクならリンクだけを
+    消し、先には触れない。
+    """
+    meta = load_meta(workdir)
+    meta["paper"] = pending_options(None)
+    meta["source_choice"] = choice
+    meta.pop("strip", None)
+    save_meta(workdir, meta, notify=notify)
+    with inside.open_dir(confine.root_of(workdir)) as top:
+        inside.remove(top, "strip")
+
+
 def selection(workdir: Path) -> dict:
     data = load_meta(workdir).get("paper")
     if not isinstance(data, dict):

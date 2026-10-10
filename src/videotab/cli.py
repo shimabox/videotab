@@ -109,8 +109,11 @@ def _paper_options(args, saved: dict, workdir: Path) -> tuple[dict, str | None]:
 
 
 def _save_paper(workdir: Path, opts: dict) -> None:
+    """紙の楽譜の設定を保存する。紙の楽譜でなかった曲は、利用者が紙と決めた曲として記録する。"""
     from videotab import paper
 
+    if not load_meta(workdir).get("paper"):
+        paper.switch_to_paper(workdir, paper.user_choice("paper"))
     if opts["part"] is None:
         paper.configure_pending(workdir, opts["strings"])
     else:
@@ -366,6 +369,23 @@ def cmd_strip(args) -> int:
         print(e, file=sys.stderr)
         return strip.NO_TAB_EXIT  # 通しの実行はこの終了コードで動画と画像を消す
     meta = load_meta(workdir)
+    # 画面のタブ譜か、紙を撮った動画かを見分ける。利用者が楽譜の種類を決めた曲と、帯を指定した実行
+    # （タブの帯があると分かっている）では見分けない
+    decided = meta.get("source_choice")
+    judge = not args.band and not (isinstance(decided, dict) and decided.get("by") == "user")
+    if judge and strip.looks_like_paper(result):
+        from videotab import paper
+
+        choice = strip.judged_source(result, "paper")
+        paper.switch_to_paper(workdir, choice)
+        resume = _resume_command(workdir.name, workdir.resolve().parent)
+        print(f"紙を撮った動画と判断しました（{strip.paper_counts(choice)}）")
+        print(f"次: {resume} --step strip（パートの洗い出し）。画面のタブ譜なら {resume} --step strip --screen")
+        return strip.PAPER_EXIT  # 通しの実行はこの終了コードで、同じ段の紙の楽譜の流れへ続く
+    if judge:
+        meta["source_choice"] = strip.judged_source(result, "video")
+    elif isinstance(decided, dict) and decided.get("by") != "user":
+        del meta["source_choice"]  # 帯を指定した実行では見分けないので、前に見分けた記録を残さない
     meta["strip"] = {
         "band": list(result.band),
         "polarity": result.polarity,
@@ -405,6 +425,8 @@ def cmd_strip(args) -> int:
         ys = ", ".join(f"{y:.1f}" for y in st.lines)
         print(f"タブ {k} 段目{mark}: 1〜6 弦の線 y={ys}（間隔 {st.spacing:.2f}px）")
     print(f"タブが見えたフレーム: {result.frames_with_tab}/{result.frames_used}（間引いて調べた枚数）")
+    if judge:
+        print(strip.source_note(result))
     print(f"確認用の画像: {out}/check_*.png（" + ", ".join(fmt_time(f.time) for f in picks) + "）")
     print(f"次: videotab pages {workdir}")
     return 0
@@ -533,7 +555,8 @@ def main(argv: list[str] | None = None) -> int:
         s.add_argument("--source-url", help="元動画のページ（https:// で始まるもの。できあがりのページからリンクする）")
 
     def paper_fields(s) -> None:
-        s.add_argument("--paper", action="store_true", help="紙の楽譜を撮影した動画として扱う（写真・PDF・画像 ZIP は自動）")
+        s.add_argument("--paper", action="store_true",
+                       help="紙の楽譜を撮影した動画として扱う（省くと自動で見分ける。写真・PDF・画像 ZIP はいつも紙の楽譜）")
         s.add_argument("--part", help="紙の楽譜から書き起こすパート名（例: Guitar II、Bass）。"
                                       "省くと楽譜のパートを洗い出して止まり、一覧から選べる")
         s.add_argument("--strings", type=int, choices=[4, 6],

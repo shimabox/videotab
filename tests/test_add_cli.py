@@ -207,6 +207,74 @@ def test_run_refuses_non_video_with_message(tmp_path, seen_runs, monkeypatch):
     assert songs(tmp_path / "work") == [] and seen_runs == []
 
 
+# --- 楽譜の種類の記録（取り込むとき）
+
+USER_PAPER = {"mode": "paper", "by": "user"}
+
+
+def meta_of(root):
+    (job_id,) = songs(root)
+    return json.loads((root / job_id / "meta.json").read_text(encoding="utf-8"))
+
+
+def test_video_without_paper_flag_records_no_source_choice(tmp_path, fake_probe, seen_runs):
+    for n, command in enumerate(("add", "run")):
+        root = tmp_path / f"work{n}"
+        assert cli.main([command, str(video(tmp_path)), "--root", str(root)]) == 0
+        meta = meta_of(root)
+        assert "source_choice" not in meta and "paper" not in meta  # strip の段が自動で見分ける
+
+
+@pytest.mark.parametrize("command", ["add", "run"])
+@pytest.mark.parametrize("options, paper", [
+    ([], {"part": None, "strings": None}),
+    (["--strings", "4"], {"part": None, "strings": 4}),
+    (["--part", "Guitar I"], {"part": "Guitar I", "strings": 6}),
+])  # fmt: skip
+def test_paper_flag_records_that_user_chose_paper(tmp_path, fake_probe, seen_runs, command, options, paper):
+    root = tmp_path / "work"
+    assert cli.main([command, str(video(tmp_path)), "--root", str(root), "--paper", *options]) == 0
+    meta = meta_of(root)
+    assert meta["paper"] == paper and meta["source_choice"] == USER_PAPER
+    assert "strip" not in meta
+
+
+@pytest.mark.parametrize("command", ["add", "run"])
+def test_documents_are_recorded_as_paper_chosen_by_user(tmp_path, seen_runs, command):
+    from PIL import Image
+
+    photo = tmp_path / "photo.png"
+    Image.new("RGB", (40, 30), "white").save(photo)
+    root = tmp_path / "work"
+    assert cli.main([command, str(photo), "--root", str(root)]) == 0
+    meta = meta_of(root)
+    assert meta["source_kind"] == "document" and meta["source_choice"] == USER_PAPER
+    assert meta["paper"] == {"part": None, "strings": None}
+
+
+def test_paper_command_records_user_choice_only_when_song_becomes_paper(tmp_path, monkeypatch, fake_probe):
+    from videotab import paper
+
+    monkeypatch.setattr(paper, "prepare", lambda _: [])
+    root = tmp_path / "work"
+    assert cli.main(["add", str(video(tmp_path)), "--root", str(root)]) == 0
+    (job_id,) = songs(root)
+    assert cli.main(["paper", str(root / job_id), "--part", "Bass", "--strings", "4"]) == 0
+    assert (meta_of(root)["paper"], meta_of(root)["source_choice"]) == ({"part": "Bass", "strings": 4}, USER_PAPER)
+    # 自動で紙と見分けた曲のパートを決めても、見分けた記録は書き換えない
+    auto = {"mode": "paper", "by": "auto", "tab_frames": [7, 24], "located_frames": [25, 97]}
+    path = root / job_id / "meta.json"
+    path.write_text(json.dumps({**meta_of(root), "paper": {"part": None, "strings": None}, "source_choice": auto}))
+    assert cli.main(["paper", str(root / job_id), "--part", "Guitar II"]) == 0
+    assert (meta_of(root)["paper"], meta_of(root)["source_choice"]) == ({"part": "Guitar II", "strings": 6}, auto)
+    # source_choice の無い、これまでの紙の曲には足さない
+    meta = meta_of(root)
+    del meta["source_choice"]
+    path.write_text(json.dumps(meta))
+    assert cli.main(["paper", str(root / job_id), "--part", "Guitar I"]) == 0
+    assert "source_choice" not in meta_of(root)
+
+
 def test_step_choices_start_with_add(tmp_path, capsys):
     with pytest.raises(SystemExit):
         cli.main(["run", "x", "--step", "nope"])

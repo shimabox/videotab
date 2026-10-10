@@ -523,6 +523,27 @@ def test_pages_and_strip_replace_files_that_are_links(tmp_path, monkeypatch, sha
     assert snapshot(out) == before
 
 
+@pytest.mark.parametrize("shape", [None, *FOLDER_SHAPES])
+def test_strip_judged_as_paper_removes_strip_folder_without_following_links(tmp_path, monkeypatch, shape):
+    from test_source_judge import PAPER_LIKE, detected
+
+    from videotab import strip
+
+    wd, out = framed(tmp_path, monkeypatch)
+    (wd / "strip" / "sub").mkdir(parents=True)
+    (wd / "strip" / "check_0001.png").write_bytes(b"old")
+    (wd / "strip" / "sub" / "to_out").symlink_to(out / "d")
+    (wd / "strip" / "to_x").symlink_to(out / "x")
+    if shape:
+        place_folder(wd / "strip", out, shape)
+    before = snapshot(out)
+    monkeypatch.setattr(strip, "detect", lambda *args, **kwargs: detected(**PAPER_LIKE))
+    assert cli.main(["strip", str(wd)]) == strip.PAPER_EXIT
+    assert not os.path.lexists(wd / "strip")  # リンクならリンクだけを消す
+    assert snapshot(out) == before
+    assert workdir.load_meta(wd)["paper"] == {"part": None, "strings": None}
+
+
 def test_zoom_without_confine_refuses_output_folder_linking_outside(tmp_path, monkeypatch, capsys):
     wd, out = framed(tmp_path, monkeypatch)
     assert cli.main(["strip", str(wd)]) == 0

@@ -162,6 +162,78 @@ class StripResult:
         return next((row[4] for row in self.corrections if row[0] == index), 1.0)
 
 
+# 画面のタブ譜か、紙を撮った動画かを見分けるしきい値。境目は画面のタブ譜に倒す
+# （画面のタブ譜を紙と取り違えないほうを優先し、紙を画面と取り違えたら利用者が切り替える）
+PAPER_EXIT = 5  # videotab strip が「紙を撮った動画」と判定して終わるときの終了コード
+PAPER_TAB_RATIO = 1 / 3  # タブが見えたフレームの割合がこれ以下なら紙の側（画面は 0.875 以上、紙は 0.29 以下だった）
+PAPER_LOCATED_RATIO = 1 / 2  # 補正で線が取れたフレームの割合がこれ以下なら紙の側（画面撮影は 0.91 以上、紙は 0.26 以下だった）
+UNSURE_TAB_RATIO = 2 / 3  # 画面と判定しても、タブが見えたフレームの割合がこれ未満なら切り替え方を添える
+
+
+def located_frames(result: StripResult) -> tuple[int, int]:
+    """カメラ撮影の補正で（線が取れたフレームの数, 全フレームの数）。補正を採用していなければ (0, 0)。"""
+    return sum(1 for row in result.corrections if row[3]), len(result.corrections)
+
+
+def looks_like_paper(result: StripResult) -> bool:
+    """検出の結果が、紙の楽譜を撮った動画に見えるか。
+
+    カメラ撮影の補正を採用していて、タブが見えたフレームも、補正で線が取れたフレームも少ないときだけ
+    True。補正を採用しなかった動画（画面録画など）は、タブが写る時間が短くても False。
+    """
+    if not result.corrections or not result.frames_used:
+        return False
+    located, total = located_frames(result)
+    return result.frames_with_tab / result.frames_used <= PAPER_TAB_RATIO and located / total <= PAPER_LOCATED_RATIO
+
+
+def judged_source(result: StripResult, mode: str) -> dict:
+    """自動で見分けた結果を meta.json の source_choice に残す形にする。mode は "video" か "paper"。"""
+    choice = {"mode": mode, "by": "auto", "tab_frames": [result.frames_with_tab, result.frames_used]}
+    if result.corrections:
+        choice["located_frames"] = list(located_frames(result))
+    return choice
+
+
+def _counts(pair) -> tuple[int, int] | None:
+    """source_choice の [数, 全体] を確かめたもの。形が違えば None（meta.json は読み手も書ける）。"""
+    if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+        return None
+    if any(type(n) is not int or n < 0 for n in pair) or pair[0] > pair[1]:
+        return None
+    return pair[0], pair[1]
+
+
+def screen_note(tab_frames) -> str | None:
+    """画面のタブ譜と判定したときの文（tab_frames は [タブが見えたフレームの数, 調べた枚数]）。形が違えば None。
+
+    根拠の数値はいつも出す。タブが見えたフレームが少ないときは、紙の楽譜への切り替え方を添える。
+    """
+    counts = _counts(tab_frames)
+    if counts is None:
+        return None
+    with_tab, used = counts
+    note = f"画面のタブ譜として検出（タブが見えたフレーム {with_tab}/{used}）"
+    if used and with_tab / used < UNSURE_TAB_RATIO:
+        note += "。タブが見えたフレームが少ないので、紙を撮った動画なら「やり直す」で楽譜の種類を紙の楽譜にしてください"
+    return note
+
+
+def source_note(result: StripResult) -> str:
+    """画面のタブ譜と判定した検出の結果から、段の結果欄と端末に出す文を作る。"""
+    return screen_note([result.frames_with_tab, result.frames_used])
+
+
+def paper_counts(choice) -> str | None:
+    """紙と判定した根拠の数値の文（choice は meta.json の source_choice）。形が違えば None。"""
+    if not isinstance(choice, dict):
+        return None
+    tab, located = _counts(choice.get("tab_frames")), _counts(choice.get("located_frames"))
+    if tab is None or located is None:
+        return None
+    return f"タブが見えたフレーム {tab[0]}/{tab[1]}、補正で線が取れたフレーム {located[0]}/{located[1]}"
+
+
 def sample_frames(frames: list[Frame], n: int = 24) -> list[Frame]:
     if len(frames) <= n:
         return frames

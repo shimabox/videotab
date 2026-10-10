@@ -7,6 +7,9 @@
 
 紙の楽譜でパートが決まっていない曲は、strip の段が楽譜のパートを洗い出したところで止まる
 （状態は waiting、段は未実行のまま）。利用者がパートを選ぶと、同じ段がページとパートの選択から続ける。
+
+楽譜の種類を指定しないで取り込んだ動画は、strip の段（videotab strip）が画面のタブ譜か紙を撮った
+動画かを見分ける。紙と見分けたら、同じ段のまま紙の楽譜の流れ（パートの洗い出し）へ続く。
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ from videotab import agent_settings, inside
 from videotab.add import find_video
 from videotab.agent import DEFAULT_ENGINE, ENGINES, videotab_bin
 from videotab.cancel import Cancel, Cancelled
-from videotab.strip import NO_TAB_EXIT
+from videotab.strip import NO_TAB_EXIT, PAPER_EXIT, paper_counts, screen_note
 from videotab.workdir import load_meta, read_json, save_meta, write_json
 
 STEPS = [
@@ -46,6 +49,8 @@ PAPER_LABELS = {"add": "楽譜の取り込み", "strip": "ページとパート�
 REBUILD_FROM = "build"  # 曲の情報を書き換えたとき、組み立て直す最初の段（ここから後はエージェントを使わない）
 # videotab run が、紙の楽譜のパートの選択待ちで止まったときの終了コード（失敗の 1、strip.NO_TAB_EXIT の 3 と分ける）
 PART_WAIT_EXIT = 4
+# strip の段が紙を撮った動画と見分けた曲で、ログと結果欄に添える戻し方
+TO_SCREEN = "画面のタブ譜なら、やり直すの楽譜の種類を画面にしてください"
 
 _file_lock = threading.Lock()
 # job.lock はリンクをたどらずに開く（リンクの先を作ったり書き換えたりしない）。
@@ -490,34 +495,44 @@ class Job:
             self._cli("frames", wd, "--force")
             return f"{len(list(frames.iterdir()))} 枚"
         if name == "strip":
-            if load_meta(self.workdir).get("paper"):
-                from videotab import paper
+            if not load_meta(self.workdir).get("paper"):
+                saved = load_meta(self.workdir).get("strip") or {}
+                band = ["--band", *map(str, saved["band"])] if saved.get("band_given") else []
+                try:
+                    self._cli("strip", wd, *band)
+                except StepError as e:
+                    if e.returncode == NO_TAB_EXIT:
+                        self._discard_media()
+                        raise StepError(
+                            "タブ譜が写っていないと判断し、取り込んだ動画と画像を消しました。"
+                            "紙を撮った動画なら、videotab run 動画 --paper で取り込み直してください"
+                        ) from None
+                    # ffmpeg がない等、タブ譜の有無と関係のない失敗では消さない
+                    if e.returncode != PAPER_EXIT or not load_meta(self.workdir).get("paper"):
+                        raise
+                    # 紙を撮った動画と判定された。同じ段のまま、下の紙の楽譜の流れへ続く
+                    counts = paper_counts(self._source_choice())
+                    self.log("紙を撮った動画と判断しました" + (f"（{counts}）" if counts else "") + f"。{TO_SCREEN}")
+                else:
+                    return self._screen_note()
+            from videotab import paper
 
-                self._change(lambda d: d.update(source_mode="paper"))
-                settings = self._settings(engine)
-                # パートが決まっていなければ洗い出して止まり、決まっていればページとパートを選ぶ
-                if not paper.is_chosen(load_meta(self.workdir).get("paper")):
-                    try:
-                        found = paper.discover(self.workdir, engine, self.log, settings=settings, cancel=self.cancel)
-                    except paper.NoTabPart as e:
-                        raise StepError(str(e)) from None
-                    parts = found["parts"]
-                    self.log("楽譜で見つかったパート:")
-                    for line in paper.describe_parts(parts):
-                        self.log(line)
-                    raise WaitForPart(f"パートの選択待ち（TAB あり {sum(p['tab'] for p in parts)} / 全 {len(parts)}）")
-                selected = paper.analyze(self.workdir, engine, self.log, settings=settings, cancel=self.cancel)
-                return f"{len(selected['pages'])} ページから指定パートを選びました"
-            strip = load_meta(self.workdir).get("strip") or {}
-            band = ["--band", *map(str, strip["band"])] if strip.get("band_given") else []
-            try:
-                self._cli("strip", wd, *band)
-            except StepError as e:
-                if e.returncode != NO_TAB_EXIT:
-                    raise  # ffmpeg がない等、タブ譜の有無と関係のない失敗では消さない
-                self._discard_media()
-                raise StepError("タブ譜が写っていないと判断し、取り込んだ動画と画像を消しました") from None
-            return None
+            self._change(lambda d: d.update(source_mode="paper"))
+            settings = self._settings(engine)
+            # パートが決まっていなければ洗い出して止まり、決まっていればページとパートを選ぶ
+            if not paper.is_chosen(load_meta(self.workdir).get("paper")):
+                try:
+                    found = paper.discover(self.workdir, engine, self.log, settings=settings, cancel=self.cancel)
+                except paper.NoTabPart as e:
+                    raise StepError(str(e)) from None
+                parts = found["parts"]
+                self.log("楽譜で見つかったパート:")
+                for line in paper.describe_parts(parts):
+                    self.log(line)
+                waiting = f"パートの選択待ち（TAB あり {sum(p['tab'] for p in parts)} / 全 {len(parts)}）"
+                raise WaitForPart(f"紙を撮った動画と判断（{TO_SCREEN}）。{waiting}" if self._judged_paper() else waiting)
+            selected = paper.analyze(self.workdir, engine, self.log, settings=settings, cancel=self.cancel)
+            return f"{len(selected['pages'])} ページから指定パートを選びました"
         if name == "pages":
             self._cli("pages", wd)
             n = len(read_json(self.workdir / "pages" / "pages.json")["pages"])
@@ -558,6 +573,24 @@ class Job:
                 return "照合していません（動画の時刻の印がありません）"
             return "動画の時刻と合っています"
         raise ValueError(name)
+
+    def _source_choice(self) -> dict:
+        """meta.json に残した楽譜の種類の記録（source_choice）。無い・形が違うときは空の表。"""
+        choice = load_meta(self.workdir).get("source_choice")
+        return choice if isinstance(choice, dict) else {}
+
+    def _screen_note(self) -> str | None:
+        """strip の段が画面のタブ譜と見分けたときの結果欄の文。見分けなかった曲（利用者が種類を決めた・
+        帯を指定した）では None。"""
+        choice = self._source_choice()
+        if choice.get("by") != "auto" or choice.get("mode") != "video":
+            return None
+        return screen_note(choice.get("tab_frames"))
+
+    def _judged_paper(self) -> bool:
+        """strip の段が紙を撮った動画と見分けた曲か（利用者が紙と決めた曲では False）。"""
+        choice = self._source_choice()
+        return choice.get("by") == "auto" and choice.get("mode") == "paper"
 
     def _settings(self, engine: str):
         """ページ選択と読み取りに、同じ曲のモデル・推論の指定を適用する。"""
