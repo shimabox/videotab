@@ -231,6 +231,27 @@ class Job:
                 data["status"] = "stopped"
                 self.save(data)
 
+    def mark_part_chosen(self, message: str) -> None:
+        """パートの選択待ちの曲で、実行の外からパートが決まったとき、止めたとして記録する。
+
+        段は未実行のままで、message を待っていた段の結果欄に出す（画面の「やり直す」か videotab run で
+        続ける）。選択待ちでなければ何もしない。job.json を読めなければそのままにする（次の実行が作り直す）。
+        """
+        with self._state_lock:
+            try:
+                data = self._current()
+            except (OSError, ValueError, SystemExit):
+                return
+            if not isinstance(data, dict) or data.get("status") != "waiting":
+                return
+            steps = data.get("steps")
+            waited = next((s for s in steps if isinstance(s, dict) and s.get("status") != "done"), None) \
+                if isinstance(steps, list) else None  # fmt: skip
+            if waited is not None:
+                waited["message"] = message
+            data["status"] = "stopped"
+            self.save(data)
+
     def mark_interrupted(self) -> None:
         """前回の実行が途中で止まったまま（画面を閉じた等）なら、失敗として記録し直す。
 

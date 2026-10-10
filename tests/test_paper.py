@@ -340,14 +340,20 @@ def test_paper_command_explicit_options_replace_stored_part_and_keep_old_score(t
     assert len(saved) == 1 and read_json(saved[0]) == score
 
 
-def test_paper_command_without_stored_part_falls_back_to_guitar(tmp_path, monkeypatch):
+def test_paper_command_without_any_part_saves_pending_and_tells_how_to_continue(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(paper, "prepare", lambda _: [])
     wd = tmp_path / "work" / "paper-456def"
     write_frames(wd, [np.asarray(score_image())])
     save_meta(wd, {"id": wd.name, "title": "合成の楽譜", "frames_from": "synthetic"})
     assert "paper" not in load_meta(wd)
     assert cli.main(["paper", str(wd)]) == 0
-    assert load_meta(wd)["paper"] == {"part": "Guitar I", "strings": 6}
+    assert load_meta(wd)["paper"] == {"part": None, "strings": None}
+    output = capsys.readouterr().out
+    assert "--step strip" in output and "--part" in output
+    assert cli.main(["paper", str(wd), "--strings", "4"]) == 0
+    assert load_meta(wd)["paper"] == {"part": None, "strings": 4}
+    assert cli.main(["paper", str(wd), "--part", "Bass"]) == 0  # 弦数は先に決めた値のまま
+    assert load_meta(wd)["paper"] == {"part": "Bass", "strings": 4}
 
 
 def test_invalid_model_choice_does_not_partially_save_part_change(tmp_path, monkeypatch):
@@ -722,3 +728,364 @@ def test_score_without_tab_part_fails_the_step_with_the_reason(tmp_path, monkeyp
     assert job.load()["status"] == "failed" and strip["status"] == "failed"
     assert strip["message"] == "TAB のあるパートが見つかりません: 五線だけの楽譜です"
     assert calls == ["パートの洗い出し"] and len(list_frames(wd)) == 3
+
+
+# --- 画面: パートの選択待ちと選択
+
+def waiting_app(tmp_path, monkeypatch):
+    """パートの選択待ちで止まった曲と、順番待ちに入れるだけで実行は始めない画面。"""
+    wd = make_pending(tmp_path)
+    calls = fake_agents(wd, monkeypatch)
+    job = pipeline.Job.create(wd, "codex", choice=Choice("gpt-5", "high"))
+    assert not job.run()
+    monkeypatch.setattr(server.App, "_worker", lambda *_: None)
+    monkeypatch.setattr(server, "available_engines", lambda: {"claude": True, "codex": True})
+    return server.App(wd.parent), wd, job, calls
+
+
+def test_upload_without_part_is_saved_as_pending_and_checks_strings_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(server.App, "_worker", lambda *_: None)
+    monkeypatch.setattr(server, "available_engines", lambda: {"claude": True, "codex": True})
+    app = server.App(tmp_path / "work")
+    raw = image_bytes()
+    job_id = app.receive(io.BytesIO(raw), len(raw), "score.png", "codex")
+    assert load_meta(app.root / job_id)["paper"] == {"part": None, "strings": None}
+    detail = app.detail(job_id)
+    assert detail["paper"] == {"part": None, "strings": None} and detail["parts"] == []
+    assert detail["steps"][2]["label"] == "ページとパートの選択"
+    job_id = app.receive(io.BytesIO(raw), len(raw), "score.png", "codex", paper_mode=True, strings=4)
+    assert load_meta(app.root / job_id)["paper"] == {"part": None, "strings": 4}
+    job_id = app.receive(io.BytesIO(raw), len(raw), "score.png", "codex", part="Guitar II")
+    assert load_meta(app.root / job_id)["paper"] == {"part": "Guitar II", "strings": 6}
+    app.check_upload("score.png", len(raw), "codex")
+    app.check_upload("score.png", len(raw), "codex", strings=4)
+    before = sorted(p.name for p in app.root.iterdir())
+    with pytest.raises(ValueError, match="弦数"):
+        app.receive(io.BytesIO(raw), len(raw), "score.png", "codex", strings=5)
+    assert sorted(p.name for p in app.root.iterdir()) == before
+
+
+def test_waiting_job_survives_restart_and_detail_lists_found_parts(tmp_path, monkeypatch):
+    app, wd, job, _ = waiting_app(tmp_path, monkeypatch)
+    assert job.load()["status"] == "waiting"  # 画面を起動しても、中断として記録し直さない
+    assert [j["status"] for j in app.list_jobs()] == ["waiting"]
+    detail = app.detail(wd.name)
+    assert detail["status"] == "waiting" and detail["stopping"] is False and detail["finished"] is None
+    assert detail["paper"] == {"part": None, "strings": None}
+    assert detail["parts"] == PARTS["parts"]
+    assert "合成の結果" in detail["notes"]["パートの洗い出し"]
+    assert "パートの洗い出し" in detail["notes_blocks"]
+    (wd / "paper" / "parts.json").write_text("{壊れた JSON")
+    assert app.detail(wd.name)["parts"] == []
+    (wd / "paper" / "parts.json").write_text(json.dumps({"parts": [part_row(name="Guitar\nII")]}))
+    assert app.detail(wd.name)["parts"] == []
+
+
+def test_choosing_listed_part_continues_from_page_selection(tmp_path, monkeypatch):
+    app, wd, job, calls = waiting_app(tmp_path, monkeypatch)
+    app.choose_part(wd.name, "Bass", 4)
+    assert load_meta(wd)["paper"] == {"part": "Bass", "strings": 4}
+    data = job.load()
+    assert data["status"] == "queued" and app.waiting == [wd.name]
+    assert steps_of(job)["frames"]["status"] == "done" and steps_of(job)["strip"]["status"] == "pending"
+    assert steps_of(job)["strip"]["message"] is None
+    assert data["engine"] == "codex" and data["choice"] == {"model": "gpt-5", "effort": "high"}
+    assert app.detail(wd.name)["status"] == "queued"
+    with pytest.raises(pipeline.Busy):  # 順番待ちの間は選び直せない
+        app.choose_part(wd.name, "Guitar I", 6)
+    app.waiting.clear()
+    assert pipeline.Job(wd).run()
+    assert calls == ["パートの洗い出し", "ページとパート", "A"]
+    assert read_json(wd / "pages" / "pages.json")["strings"] == 4
+    assert app.detail(wd.name)["parts"] == PARTS["parts"]
+
+
+@pytest.mark.parametrize("part,strings", [
+    ("Drums", 6),  # TAB なし
+    ("Guitar 2", 6),  # 一覧に無い綴り
+    ("guitar ii", 6),
+    (" Guitar II", 6),
+    ("", 6),
+    (None, 6),
+    (["Guitar II"], 6),
+    ("Guitar II", 5),
+    ("Guitar II", "6"),
+    ("Guitar II", None),
+    ("Guitar II", True),
+])
+def test_choosing_part_accepts_only_listed_tab_parts_and_valid_strings(tmp_path, monkeypatch, part, strings):
+    app, wd, job, _ = waiting_app(tmp_path, monkeypatch)
+    with pytest.raises(ValueError):
+        app.choose_part(wd.name, part, strings)
+    assert load_meta(wd)["paper"] == {"part": None, "strings": None}
+    assert job.load()["status"] == "waiting" and app.waiting == []
+
+
+def test_choosing_part_is_refused_unless_waiting_with_a_valid_list(tmp_path, monkeypatch):
+    app, wd, job, _ = waiting_app(tmp_path, monkeypatch)
+    with pytest.raises(KeyError):
+        app.choose_part("no-such-song", "Guitar II", 6)
+    with pipeline.Job(wd).hold():  # videotab run など、別の実行が握っている
+        with pytest.raises(pipeline.Busy):
+            app.choose_part(wd.name, "Guitar II", 6)
+    text = (wd / "paper" / "parts.json").read_text()
+    (wd / "paper" / "parts.json").write_text("{壊れた JSON")
+    with pytest.raises(ValueError, match="一覧を読めません"):
+        app.choose_part(wd.name, "Guitar II", 6)
+    (wd / "paper" / "parts.json").write_text(text)
+    paper.configure(wd, "Guitar I", 6)  # 選択済みの曲
+    with pytest.raises(ValueError, match="選択待ちの曲ではありません"):
+        app.choose_part(wd.name, "Guitar II", 6)
+    assert load_meta(wd)["paper"] == {"part": "Guitar I", "strings": 6} and app.waiting == []
+
+
+def test_retrying_waiting_job_lists_parts_again_or_uses_typed_part(tmp_path, monkeypatch):
+    app, wd, job, calls = waiting_app(tmp_path, monkeypatch)
+    app.retry(wd.name, "strip", None)  # パートを送らない: 洗い出しから
+    assert job.load()["status"] == "queued" and load_meta(wd)["paper"]["part"] is None
+    app.waiting.clear()
+    assert not pipeline.Job(wd).run()
+    assert calls == ["パートの洗い出し"] * 2 and job.load()["status"] == "waiting"
+    with pytest.raises(ValueError, match="パートを指定"):
+        app.retry(wd.name, "strip", None, paper_choice={"part": "", "strings": 6})
+    app.retry(wd.name, "read", None, paper_choice={"part": "Guitar III", "strings": 6})  # 一覧に無い名前も入力できる
+    assert load_meta(wd)["paper"] == {"part": "Guitar III", "strings": 6}
+    assert steps_of(job)["strip"]["status"] == "pending"
+    app.waiting.clear()
+    assert pipeline.Job(wd).run()
+    assert calls[2:] == ["ページとパート", "A"]
+
+
+def test_chosen_job_keeps_its_part_when_retry_sends_no_part(tmp_path, monkeypatch):
+    app, wd, job, calls = waiting_app(tmp_path, monkeypatch)
+    app.choose_part(wd.name, "Guitar II", 6)
+    app.waiting.clear()
+    assert pipeline.Job(wd).run()
+    app.retry(wd.name, "strip", None)
+    assert load_meta(wd)["paper"] == {"part": "Guitar II", "strings": 6}
+    app.waiting.clear()
+    assert pipeline.Job(wd).run()
+    assert calls == ["パートの洗い出し", "ページとパート", "A", "ページとパート", "A"]
+
+
+def test_part_is_chosen_through_the_page_api(tmp_path, monkeypatch):
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    app, wd, job, _ = waiting_app(tmp_path, monkeypatch)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(app))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{httpd.server_address[1]}/api/jobs/{wd.name}"
+
+    def post(body, header=True):
+        req = urllib.request.Request(url + "/part", data=json.dumps(body).encode(), method="POST")
+        if header:
+            req.add_header("X-Videotab", "1")
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    try:
+        with urllib.request.urlopen(url) as r:
+            detail = json.loads(r.read())
+        assert detail["status"] == "waiting" and [p["name"] for p in detail["parts"]][:2] == ["Guitar I", "Guitar II"]
+        assert post({"part": "Guitar II", "strings": 6}, header=False)[0] == 403
+        assert post({"part": "Drums", "strings": 6})[0] == 400
+        assert post({"part": "Guitar II"})[0] == 400
+        assert post({})[0] == 400
+        assert load_meta(wd)["paper"]["part"] is None
+        assert post({"part": "Guitar II", "strings": 6}) == (200, {"id": wd.name})
+        assert load_meta(wd)["paper"] == {"part": "Guitar II", "strings": 6}
+        assert post({"part": "Guitar I", "strings": 6})[0] == 409  # 順番待ちに入った
+    finally:
+        httpd.shutdown()
+
+
+# --- コマンド: パートを省くと洗い出して止まり、--part で続ける
+
+def run_cli(wd, *options):
+    return cli.main(["run", wd.name, "--root", str(wd.parent), *options])
+
+
+def test_run_without_part_lists_parts_and_exits_with_wait_code(tmp_path, monkeypatch, capsys):
+    wd = make_pending(tmp_path)
+    calls = fake_agents(wd, monkeypatch)
+    assert pipeline.PART_WAIT_EXIT == 4
+    assert run_cli(wd) == 4
+    assert calls == ["パートの洗い出し"] and pipeline.Job(wd).load()["status"] == "waiting"
+    output = capsys.readouterr().out
+    assert "2. Guitar II  TAB あり  6 弦の見込み" in output and "4. Drums      TAB なし（選べません）" in output
+    resume = shlex.join(["videotab", "run", wd.name, "--root", str(wd.parent.resolve())])
+    assert f"  {resume} --part 'Guitar II'" in output and f"  {resume} --part Bass" in output
+    assert "--part Drums" not in output and "途中で止まりました" not in output
+    # もう一度実行しても、エージェントを起動せずに一覧を出し直す
+    assert run_cli(wd) == 4
+    assert calls == ["パートの洗い出し"]
+    output = capsys.readouterr().out
+    assert "楽譜で見つかったパート:" in output and "1. Guitar I   TAB あり" in output
+    assert f"  {resume} --part 'Guitar I'" in output
+    # 弦数だけを先に決めても、洗い出しはやり直さない
+    assert run_cli(wd, "--strings", "4") == 4
+    assert calls == ["パートの洗い出し"] and load_meta(wd)["paper"] == {"part": None, "strings": 4}
+    # 洗い出しからやり直すときは --step strip
+    assert run_cli(wd, "--step", "strip") == 4
+    assert calls == ["パートの洗い出し"] * 2
+
+
+def test_run_with_part_continues_waiting_job_with_listed_strings(tmp_path, monkeypatch, capsys):
+    wd = make_pending(tmp_path)
+    calls = fake_agents(wd, monkeypatch)
+    assert run_cli(wd) == 4
+    capsys.readouterr()
+    assert run_cli(wd, "--part", "Bass") == 0  # 弦数は一覧の見込み（4 弦）
+    assert load_meta(wd)["paper"] == {"part": "Bass", "strings": 4}
+    assert calls == ["パートの洗い出し", "ページとパート", "A"]
+    assert pipeline.Job(wd).load()["status"] == "done"
+    assert build.load_score(wd)["tuning"] == "g2 d2 a1 e1"
+    output = capsys.readouterr().out
+    assert "注意" not in output and "できあがり" in output
+
+
+def test_paper_command_with_part_ends_the_wait_and_run_continues_from_selection(tmp_path, monkeypatch, capsys):
+    app, wd, job, calls = waiting_app(tmp_path, monkeypatch)
+    waiting = job.load()
+    # パートを決めない設定の変更では、選択待ちのまま
+    assert cli.main(["paper", str(wd), "--strings", "4"]) == 0
+    assert load_meta(wd)["paper"] == {"part": None, "strings": 4} and job.load() == waiting
+    assert cli.main(["paper", str(wd), "--part", "Bass"]) == 0
+    assert load_meta(wd)["paper"] == {"part": "Bass", "strings": 4}
+    data, steps = job.load(), steps_of(job)
+    resume = shlex.join(["videotab", "run", wd.name, "--root", str(wd.parent.resolve())])
+    assert data["status"] == "stopped" and pipeline.finished_at(data) is None
+    assert steps["frames"]["status"] == "done" and steps["strip"]["status"] == "pending"
+    assert steps["strip"]["message"] == f"パートを指定しました（{resume} で続ける）"
+    assert data["engine"] == "codex" and data["choice"] == {"model": "gpt-5", "effort": "high"}
+    # 画面は「パートを選ぶ」を出さず（選択待ちでなく、パートも決まっている）、中断した曲としてやり直せる
+    detail = app.detail(wd.name)
+    assert detail["status"] == "stopped" and detail["paper"] == {"part": "Bass", "strings": 4}
+    assert [j["status"] for j in app.list_jobs()] == ["stopped"]
+    assert calls == ["パートの洗い出し"]
+    capsys.readouterr()
+    assert run_cli(wd) == 0  # --step を付けなくても、ページとパートの選択から続く
+    assert calls == ["パートの洗い出し", "ページとパート", "A"]
+    assert job.load()["status"] == "done" and read_json(wd / "pages" / "pages.json")["part"] == "Bass"
+    assert "楽譜で見つかったパート:" not in capsys.readouterr().out
+    # 選択待ちでない曲の記録は書き換えない
+    done = job.load()
+    assert cli.main(["paper", str(wd), "--part", "Guitar I", "--strings", "6"]) == 0
+    assert job.load() == done
+
+
+def test_paper_command_with_part_does_not_make_a_job_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(paper, "prepare", lambda _: [])
+    wd = make_pending(tmp_path)
+    assert cli.main(["paper", str(wd), "--part", "Bass"]) == 0
+    assert load_meta(wd)["paper"] == {"part": "Bass", "strings": 6} and not (wd / "job.json").exists()
+    # job.json を読めなくても、パートは保存する（記録は次の実行が作り直す）
+    paper.configure_pending(wd, None)
+    (wd / "job.json").write_text("{壊れた JSON")
+    assert cli.main(["paper", str(wd), "--part", "Bass"]) == 0
+    assert load_meta(wd)["paper"]["part"] == "Bass" and (wd / "job.json").read_text() == "{壊れた JSON"
+
+
+@pytest.mark.parametrize("options,strings,note", [
+    (["--part", "Guitar II"], 6, None),
+    (["--part", "Guitar II", "--strings", "4"], 4, None),  # 明示した弦数が見込みより優先
+    (["--part", "Bass", "--strings", "6"], 6, None),
+    (["--part", "Guitar 2"], 6, "注意: Guitar 2 は楽譜で見つかったパートの一覧にありません"),
+    (["--part", "Guitar 2", "--strings", "4"], 4, "注意: Guitar 2 は楽譜で見つかったパートの一覧にありません"),
+    (["--part", "Ukulele"], 6, "注意: Ukulele の弦数が決まっていないので、6 弦として進めます"),
+])
+def test_run_part_strings_for_waiting_job(tmp_path, monkeypatch, capsys, options, strings, note):
+    wd = make_pending(tmp_path)
+    write_parts(wd, {"parts": [*PARTS["parts"], {"name": "Ukulele", "tab": True, "strings": None}]})
+    pipeline.Job.create(wd)
+    monkeypatch.setattr(pipeline.Job, "run", lambda self: True)
+    assert run_cli(wd, *options) == 0
+    assert load_meta(wd)["paper"] == {"part": options[1], "strings": strings}
+    assert steps_of(pipeline.Job(wd))["strip"]["status"] == "pending"
+    notes = [line for line in capsys.readouterr().out.splitlines() if line.startswith("注意")]
+    assert len(notes) == (1 if note else 0) and all(line.startswith(note) for line in notes)
+
+
+def test_run_part_keeps_strings_given_at_start_over_listed_guess(tmp_path, monkeypatch, capsys):
+    wd = make_pending(tmp_path, strings=4)
+    write_parts(wd)
+    pipeline.Job.create(wd)
+    monkeypatch.setattr(pipeline.Job, "run", lambda self: True)
+    assert run_cli(wd, "--part", "Guitar II") == 0
+    assert load_meta(wd)["paper"] == {"part": "Guitar II", "strings": 4}
+    notes = [line for line in capsys.readouterr().out.splitlines() if line.startswith("注意")]
+    assert len(notes) == 1 and "6 弦の見込み" in notes[0] and "4 弦のまま" in notes[0]
+
+
+def test_run_part_only_keeps_strings_of_chosen_job(tmp_path, monkeypatch, capsys):
+    wd, _ = stored_bass(tmp_path)
+    write_parts(wd, {"parts": [{"name": "Bass", "tab": True, "strings": 4}, {"name": "Bass II", "tab": True, "strings": 6}]})
+    pipeline.Job.create(wd)
+    monkeypatch.setattr(pipeline.Job, "run", lambda self: True)
+    assert run_cli(wd, "--part", "Bass II") == 0
+    assert load_meta(wd)["paper"] == {"part": "Bass II", "strings": 4}  # 見込みが 6 でも、保存済みの弦数のまま
+    notes = [line for line in capsys.readouterr().out.splitlines() if line.startswith("注意")]
+    assert len(notes) == 1 and "Bass II は 6 弦の見込み" in notes[0] and "--strings 6" in notes[0]
+    score = build.load_score(wd)  # パート名が変わるので、チューニングとカポは 4 弦の標準に戻る
+    assert (score["tuning"], score["capo"]) == ("g2 d2 a1 e1", 0)
+    assert len(list((wd / "history").glob("part-*/score.json"))) == 1
+    assert run_cli(wd, "--part", "Bass II", "--strings", "6") == 0
+    assert load_meta(wd)["paper"] == {"part": "Bass II", "strings": 6}
+    assert not [line for line in capsys.readouterr().out.splitlines() if line.startswith("注意")]
+
+
+def test_add_and_run_without_part_start_as_pending(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "photo.png"
+    source.write_bytes(image_bytes())
+    root = tmp_path / "scores"
+
+    def added():
+        return [load_meta(p)["paper"] for p in sorted(root.iterdir(), key=lambda p: p.stat().st_mtime_ns) if p.is_dir()]
+
+    assert cli.main(["add", str(source), "--root", str(root)]) == 0
+    assert cli.main(["add", str(source), "--root", str(root), "--strings", "4"]) == 0
+    assert cli.main(["add", str(source), "--root", str(root), "--part", "Guitar II"]) == 0
+    assert cli.main(["add", str(source), "--root", str(root), "--part", "Bass", "--strings", "4"]) == 0
+    assert sorted(added(), key=json.dumps) == sorted([
+        {"part": None, "strings": None}, {"part": None, "strings": 4},
+        {"part": "Guitar II", "strings": 6}, {"part": "Bass", "strings": 4},
+    ], key=json.dumps)
+    # 新しいファイルを通しで実行すると、洗い出して選択待ちで終わる
+    capsys.readouterr()
+    one_page = {"parts": [{"name": "Guitar II", "tab": True, "strings": 6, "frames": [1]}]}  # 写真は 1 枚
+    calls = fake_agents(tmp_path, monkeypatch, one_page)
+    fresh = tmp_path / "fresh"
+    assert cli.main(["run", str(source), "--root", str(fresh)]) == 4
+    wd = next(p for p in fresh.iterdir() if p.is_dir())
+    assert calls == ["パートの洗い出し"] and load_meta(wd)["paper"] == {"part": None, "strings": None}
+    assert pipeline.Job(wd).load()["status"] == "waiting"
+    assert f"{shlex.join(['videotab', 'run', wd.name, '--root', str(fresh.resolve())])} --part 'Guitar II'" in capsys.readouterr().out
+
+
+def test_page_lists_found_parts_as_text_and_lets_part_be_left_empty():
+    from importlib import resources
+
+    page = resources.files("videotab").joinpath("templates", "app.html").read_text(encoding="utf-8")
+    start = page.index("// --- 紙の楽譜のパートを選ぶ\n")
+    section = page[start:page.index("// ---", start + 1)]
+    # 名前はエージェントが楽譜から読んだ文字なので、文字として入れる
+    assert "text: p.name" in section and '"/part"' in section and "radio.disabled = !p.tab" in section
+    for word in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "DOMParser", "eval", "setAttribute"):
+        assert word not in section, word
+    assert 'waiting: "パートの選択待ち"' in page and ".st-waiting" in page
+    # パートが決まっている曲では、状態が選択待ちのままでも選ぶ区画を出さない
+    assert 'return d.status === "waiting" && !(d.paper && d.paper.part != null);' in section
+    assert "var waiting = choosingPart(d);" in section
+    # 新規フォームではパートを聞かない（紙の楽譜はいつも洗い出した一覧から選ぶ）。楽譜の種類は動画のときだけ聞く
+    assert 'id="paper-part"' not in page and 'id="paper-hint"' not in page and "fields.part" not in page
+    assert '<div class="pick-row paper-pick" id="paper-row" hidden>' in page
+    assert '$("paper-row").hidden = !chosen || isDocument(chosen);' in page
+    # やり直しの行は、パート欄が空なら paper を送らない。弦数が決まっていない曲の初期値は 6
+    assert "if (part) body.paper = { part: part, strings: Number(row.paperStrings.value) };" in page
+    assert 'row.paperStrings.value = d.paper.strings === 4 ? "4" : "6";' in page

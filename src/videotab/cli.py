@@ -68,21 +68,71 @@ def _add_video(src: Path, args) -> Path:
         raise SystemExit(str(e)) from None
 
 
+def _saved_paper(workdir: Path) -> dict:
+    """meta.json に保存された紙の楽譜の設定（paper）。無ければ空の表。"""
+    saved = load_meta(workdir).get("paper")
+    return saved if isinstance(saved, dict) else {}
+
+
+def _paper_options(args, saved: dict, workdir: Path) -> tuple[dict, str | None]:
+    """--part・--strings と保存済みの設定から、紙の楽譜の設定と、端末に出す注意（無ければ None）を決める。
+
+    パートがどこにも無ければ、パートを選ぶ前の設定になる。弦数の優先順位は次のとおり。
+    - パートが保存済みの曲: --strings → 保存済みの弦数 → 6。--part だけを変えても弦数は変えない
+    - パートを選ぶ前の曲: --strings → 始めるときに指定した弦数 → 洗い出した一覧で名前が一致した
+      パートの見込み → 6
+    --part の名前は、一覧に無くても受け付ける。一覧に無い・見込みと違う弦数で進めるときは注意を返す。
+    """
+    from videotab import paper
+
+    part = args.part or saved.get("part")
+    strings = args.strings or saved.get("strings")
+    if not part:
+        return paper.pending_options(strings), None
+    note = None
+    if args.part:
+        name = args.part.strip()
+        found = paper.load_parts(workdir)
+        match = next((p for p in found if p["name"] == name), None)
+        guess = match["strings"] if match else None
+        if not strings and not paper.is_chosen(saved):
+            strings = guess
+        final = strings or 6
+        hint = "" if strings else "（4 弦なら --strings 4）"
+        if found and match is None:
+            note = f"注意: {name} は楽譜で見つかったパートの一覧にありません。この名前のまま、{final} 弦として進めます{hint}"
+        elif guess and guess != final and not args.strings:
+            note = f"注意: 一覧では {name} は {guess} 弦の見込みですが、{final} 弦のまま進めます（変えるなら --strings {guess}）"
+        elif not strings:
+            note = f"注意: {name} の弦数が決まっていないので、6 弦として進めます{hint}"
+    return paper.options(part, strings or 6), note
+
+
+def _save_paper(workdir: Path, opts: dict) -> None:
+    from videotab import paper
+
+    if opts["part"] is None:
+        paper.configure_pending(workdir, opts["strings"])
+    else:
+        paper.configure(workdir, **opts)
+
+
 def _add_input(src: Path, args) -> Path:
     from videotab import documents, paper
 
     try:
-        opts = paper.options(args.part or paper.DEFAULT_PART, args.strings or 6)
+        # パートを省くと、パートを選ぶ前の曲になる（strip の段が楽譜のパートを洗い出して止まる）
+        opts = paper.options(args.part, args.strings or 6) if args.part else paper.pending_options(args.strings)
         if src.is_dir() or src.suffix.lower() in documents.EXTS:
             wd = documents.import_source(src, Path(args.root), title=args.title, creator=args.creator,
                                          source_url=args.source_url)
-            paper.configure(wd, **opts)
+            _save_paper(wd, opts)
             return wd
         if not args.paper and (args.part is not None or args.strings is not None):
             raise ValueError("動画の --part・--strings は --paper と一緒に指定してください")
         wd = _add_video(src, args)
         if args.paper:
-            paper.configure(wd, **opts)
+            _save_paper(wd, opts)
         return wd
     except ValueError as e:
         raise SystemExit(str(e)) from None
@@ -96,10 +146,30 @@ def _resume_command(job_id: str, root: Path) -> str:
     return shlex.join(words)
 
 
+def _print_part_choices(workdir: Path, *, listing: bool) -> None:
+    """パートの選択待ちの曲の続け方を出す。listing なら、洗い出したパートの一覧も出す。"""
+    from videotab import paper
+
+    parts = paper.load_parts(workdir)
+    resume = _resume_command(workdir.name, workdir.resolve().parent)
+    if listing:
+        print("楽譜で見つかったパート:")
+        for line in paper.describe_parts(parts):
+            print(line)
+    print("続きは、書き起こすパートを --part で指定します（弦数が見込みと違うときは --strings 4 か 6 を付ける）:")
+    for part in parts:
+        if part["tab"]:
+            # - で始まる名前は、オプションと紛れないよう = でつなぐ
+            option = "--part=" if part["name"].startswith("-") else "--part "
+            print(f"  {resume} {option}{shlex.quote(part['name'])}")
+    print(f"一覧に無い名前も指定できます。洗い出しからやり直すなら: {resume} --step strip")
+
+
 def cmd_run(args) -> int:
     from contextlib import ExitStack
 
-    from videotab.pipeline import STEP_NAMES, Busy, Job, has_steps
+    from videotab import paper
+    from videotab.pipeline import PART_WAIT_EXIT, STEP_NAMES, Busy, Job, has_steps
     from videotab.workdir import ID_PATTERN
 
     root = Path(args.root).resolve()
@@ -135,20 +205,27 @@ def cmd_run(args) -> int:
         else:
             data = job.load()
             if args.paper or args.part is not None or args.strings is not None:
-                from videotab import paper
-
-                stored = load_meta(workdir).get("paper") or {}
+                stored = _saved_paper(workdir)
                 try:
-                    opts = paper.options(args.part or stored.get("part") or paper.DEFAULT_PART,
-                                         args.strings or stored.get("strings") or 6)
+                    opts, note = _paper_options(args, stored, workdir)
                 except ValueError as e:
                     raise SystemExit(str(e)) from None
                 if opts != stored:
                     _run_choice(args, data)  # パートを保存する前にもモデル・推論の指定を確かめる
                     if args.step and STEP_NAMES.index(args.step) > STEP_NAMES.index("strip"):
                         raise SystemExit("パート・弦数を変えるときは --step strip からやり直してください")
-                    paper.configure(workdir, **opts)
-                    args.step = args.step or "strip"
+                    if note:
+                        print(note, flush=True)
+                    _save_paper(workdir, opts)
+                    # パートを選ぶ前の曲で弦数だけを決めたときは、段を戻さない（洗い出した一覧を残す）
+                    if opts["part"] is not None or not stored:
+                        args.step = args.step or "strip"
+            # パートの選択待ちで、洗い出した一覧があれば、エージェントを起動せずに一覧を出し直す
+            # （洗い出しからやり直すときは --step strip）
+            unchosen = _saved_paper(workdir)
+            if unchosen and not paper.is_chosen(unchosen) and not args.step and paper.load_parts(workdir):
+                _print_part_choices(workdir, listing=True)
+                return PART_WAIT_EXIT
             if data and not args.step and data.get("status") == "done":
                 print(f"できあがっています: {workdir / (workdir.name + '.html')}（作り直すなら --step で段を指定）")
                 return 0
@@ -182,6 +259,10 @@ def cmd_run(args) -> int:
     if ok:
         print(f"できあがり: {workdir / (workdir.name + '.html')}")
         return 0
+    if job.load().get("status") == "waiting":
+        # 見つかったパートの一覧は、実行のログとして端末に出ている
+        _print_part_choices(workdir, listing=False)
+        return PART_WAIT_EXIT
     print(f"途中で止まりました（{job.path} と {job.log_path}）")
     # 動画ファイルをもう一度渡すと別の曲になるので、続きは ID で指す
     print(f"続きは {_resume_command(workdir.name, workdir.resolve().parent)}")
@@ -406,17 +487,28 @@ def cmd_paper(args) -> int:
     from videotab.pipeline import Busy, Job
 
     workdir = resolve_target(args.target)
+    resume = _resume_command(workdir.name, workdir.resolve().parent)
     try:
-        with Job(workdir).hold():
-            stored = load_meta(workdir).get("paper") or {}
-            part = args.part or stored.get("part") or paper.DEFAULT_PART
-            strings = args.strings or stored.get("strings") or 6
-            paper.configure(workdir, part, strings)
+        with Job(workdir).hold() as job:
+            try:
+                opts, note = _paper_options(args, _saved_paper(workdir), workdir)
+            except ValueError as e:
+                raise SystemExit(str(e)) from None
+            _save_paper(workdir, opts)
+            if opts["part"] is not None:
+                # パートの選択待ちで止まっていた曲は、選択待ちを解く（画面に「パートを選ぶ」を残さない）
+                job.mark_part_chosen(f"パートを指定しました（{resume} で続ける）")
             picks = paper.prepare(workdir)
     except Busy:
         raise SystemExit("実行中の曲の紙の楽譜設定は変更できません") from None
+    if note:
+        print(note)
     print(f"紙の楽譜の候補 {len(picks)} 枚: {workdir / 'paper' / 'candidates'}")
-    print("ページとパートの選択から続ける: " + _resume_command(workdir.name, workdir.resolve().parent) + " --step strip")
+    if opts["part"] is None:
+        print(f"パートが決まっていません。楽譜のパートを洗い出す: {resume} --step strip")
+        print(f"パートを指定して続ける: {resume} --part 'パート名'")
+    else:
+        print(f"ページとパートの選択から続ける: {resume} --step strip")
     return 0
 
 
@@ -442,8 +534,10 @@ def main(argv: list[str] | None = None) -> int:
 
     def paper_fields(s) -> None:
         s.add_argument("--paper", action="store_true", help="紙の楽譜を撮影した動画として扱う（写真・PDF・画像 ZIP は自動）")
-        s.add_argument("--part", help="紙の楽譜から書き起こすパート名（既定 Guitar I。例: Guitar II、Bass）")
-        s.add_argument("--strings", type=int, choices=[4, 6], help="紙の楽譜の弦数（既定 6。ベースは 4）")
+        s.add_argument("--part", help="紙の楽譜から書き起こすパート名（例: Guitar II、Bass）。"
+                                      "省くと楽譜のパートを洗い出して止まり、一覧から選べる")
+        s.add_argument("--strings", type=int, choices=[4, 6],
+                       help="紙の楽譜の弦数（ベースは 4）。省くと保存済みの弦数か、洗い出した一覧の見込み、なければ 6")
 
     s = sub.add_parser("run", help="取り込みからタブ譜の出力までを通しで実行（画面なし）")
     s.add_argument("target", help="動画・写真・PDF・画像 ZIP・画像フォルダ、または既存の作業フォルダの ID かパス")
@@ -475,7 +569,8 @@ def main(argv: list[str] | None = None) -> int:
 
     s = sub.add_parser("paper", help="紙の楽譜のパートを設定し、ページ候補を作る（エージェントは起動しない）")
     s.add_argument("target", help="既存の作業フォルダの ID かパス")
-    s.add_argument("--part", help="書き起こすパート名（既定は保存済みの指定、なければ Guitar I。例: Guitar I、Bass）")
+    s.add_argument("--part", help="書き起こすパート名（既定は保存済みの指定。例: Guitar I、Bass）。"
+                                  "保存済みの指定もなければ、パートを選ぶ前の曲として保存する")
     s.add_argument("--strings", type=int, choices=[4, 6], help="弦数（既定は保存済みの指定、なければ 6）")
     s.set_defaults(func=cmd_paper)
 

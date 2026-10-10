@@ -812,7 +812,10 @@ def test_retry_row_has_title_named_fields_and_button_saying_the_step():
     # ボタンはモデルの段（.pick-row）に入れず、その下の独立した段に置く
     rows = build.split('row.el = el("div", { class: "actions retry" }, [')[1]
     assert 'el("div", { class: "pick-row" }, [picker.root]),' in rows
-    assert rows.index('class: "pick-row"') < rows.index('el("div", { class: "retry-go-row" }, [go])')
+    assert 'var goRow = el("div", { class: "retry-go-row" }, [go]);' in build
+    assert rows.index('class: "pick-row"') < rows.index("goRow")
+    # 紙の楽譜のパート・弦数は、ボタンで送る値なのでボタンの段の前に入れる
+    assert "row.el.insertBefore(" in build and "]), goRow);" in build
     # 枠と文字だけのアクセント色。曲の情報とは線で区切る
     css = page.split("<style>")[1].split("</style>")[0]
     go = re.search(r"button\.retry-go \{([^}]*)\}", css).group(1)

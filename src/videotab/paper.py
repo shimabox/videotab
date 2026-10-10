@@ -30,7 +30,6 @@ MAX_PART_NAME = 80  # 洗い出したパート名の長さの上限（文字）
 MAX_PART_FRAMES = 200  # 1 つのパートに書ける元フレームの数の上限
 MAX_WARNINGS = 50
 MAX_WARNING_TEXT = 500
-DEFAULT_PART = "Guitar I"
 PARTS_LABEL = "パートの洗い出し"
 CONFIDENCE = {"high": "高", "medium": "中", "low": "低"}
 
@@ -40,7 +39,8 @@ def _check_strings(strings) -> None:
         raise ValueError("弦数は 4 または 6 を指定してください")
 
 
-def options(part: str = DEFAULT_PART, strings: int = 6) -> dict:
+def options(part: str | None, strings: int = 6) -> dict:
+    """書き起こすパートと弦数の設定。パートが無い・空なら ValueError（既定のパート名は置かない）。"""
     from videotab.add import check_text
 
     name = check_text("書き起こすパート", part)
