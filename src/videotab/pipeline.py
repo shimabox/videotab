@@ -4,6 +4,9 @@
 （add.add / add.receive）に済ませ、最初の段（add）は取り込んだ動画があるかを確かめるだけ。
 途中で失敗しても、その段からやり直せる。切り出し・検出・組み立て・照合は videotab のコマンドを
 子プロセスで実行し、出力を job.log に残す。読み取りは read.py がエージェントを起動して行う。
+
+紙の楽譜でパートが決まっていない曲は、strip の段が楽譜のパートを洗い出したところで止まる
+（状態は waiting、段は未実行のまま）。利用者がパートを選ぶと、同じ段がページとパートの選択から続ける。
 """
 
 from __future__ import annotations
@@ -41,6 +44,8 @@ STEP_NAMES = [name for name, _ in STEPS]
 STEP_LABELS = dict(STEPS)
 PAPER_LABELS = {"add": "楽譜の取り込み", "strip": "ページとパートの選択", "pages": "段の補正と拡大", "verify": "検査結果の確認"}
 REBUILD_FROM = "build"  # 曲の情報を書き換えたとき、組み立て直す最初の段（ここから後はエージェントを使わない）
+# videotab run が、紙の楽譜のパートの選択待ちで止まったときの終了コード（失敗の 1、strip.NO_TAB_EXIT の 3 と分ける）
+PART_WAIT_EXIT = 4
 
 _file_lock = threading.Lock()
 # job.lock はリンクをたどらずに開く（リンクの先を作ったり書き換えたりしない）。
@@ -423,6 +428,12 @@ class Job:
                 self.update_step(name, status="pending", started=None, ended=None, message="止めました")
                 self._change(lambda d: d.update(status="stopped"))
                 return False
+            except WaitForPart as e:
+                # 利用者がパートを選ぶまで待つ。段は未実行に戻す（選ぶ・やり直すと、この段の最初から始まる）
+                self.log(str(e))
+                self.update_step(name, status="pending", started=None, ended=None, message=str(e))
+                self._change(lambda d: d.update(status="waiting"))
+                return False
             except (Exception, SystemExit) as e:  # noqa: BLE001 - 段の失敗は画面に出して止める
                 expected = isinstance(e, (StepError, RuntimeError, SystemExit))
                 msg = str(e) if expected else f"{type(e).__name__}: {e}"
@@ -463,6 +474,17 @@ class Job:
 
                 self._change(lambda d: d.update(source_mode="paper"))
                 settings = self._settings(engine)
+                # パートが決まっていなければ洗い出して止まり、決まっていればページとパートを選ぶ
+                if not paper.is_chosen(load_meta(self.workdir).get("paper")):
+                    try:
+                        found = paper.discover(self.workdir, engine, self.log, settings=settings, cancel=self.cancel)
+                    except paper.NoTabPart as e:
+                        raise StepError(str(e)) from None
+                    parts = found["parts"]
+                    self.log("楽譜で見つかったパート:")
+                    for line in paper.describe_parts(parts):
+                        self.log(line)
+                    raise WaitForPart(f"パートの選択待ち（TAB あり {sum(p['tab'] for p in parts)} / 全 {len(parts)}）")
                 selected = paper.analyze(self.workdir, engine, self.log, settings=settings, cancel=self.cancel)
                 return f"{len(selected['pages'])} ページから指定パートを選びました"
             strip = load_meta(self.workdir).get("strip") or {}
@@ -580,6 +602,10 @@ class StepError(RuntimeError):
     def __init__(self, message: str, returncode: int | None = None):
         super().__init__(message)
         self.returncode = returncode
+
+
+class WaitForPart(Exception):
+    """紙の楽譜のパートが決まっていないので、利用者が選ぶまで実行を止める。文言は段の結果欄に出す。"""
 
 
 class Busy(RuntimeError):

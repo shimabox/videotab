@@ -3,6 +3,10 @@
 ページとパートの判別は既存の読み取りエージェントが行う。書き込み先は paper/layout.json
 だけを追加する。楽器名と譜面の対応を画像から判断するためで、コマンドの許可は広げない。
 領域の座標・弦数・元フレームを本体で検査してから、画像を切り出す。
+
+パートを指定しないで始めた曲（meta.json の paper.part が null）では、先に楽譜にあるパートを
+エージェントに洗い出させる。出力先は paper/parts.json の 1 ファイルで、名前の文字・長さ・件数・
+型を本体で検査する。parts.json はエージェントが書くファイルなので、読むたびに検査し直す。
 """
 
 from __future__ import annotations
@@ -21,7 +25,19 @@ from videotab.strip import find_peaks, to_gray
 from videotab.workdir import Frame, json_text, list_frames, load_meta, read_json, save_meta, write_json
 
 MAX_REGIONS = 200
+MAX_PARTS = 40  # 洗い出したパートの数の上限
+MAX_PART_NAME = 80  # 洗い出したパート名の長さの上限（文字）
+MAX_PART_FRAMES = 200  # 1 つのパートに書ける元フレームの数の上限
+MAX_WARNINGS = 50
+MAX_WARNING_TEXT = 500
 DEFAULT_PART = "Guitar I"
+PARTS_LABEL = "パートの洗い出し"
+CONFIDENCE = {"high": "高", "medium": "中", "low": "低"}
+
+
+def _check_strings(strings) -> None:
+    if type(strings) is not int or strings not in (4, 6):
+        raise ValueError("弦数は 4 または 6 を指定してください")
 
 
 def options(part: str = DEFAULT_PART, strings: int = 6) -> dict:
@@ -30,9 +46,20 @@ def options(part: str = DEFAULT_PART, strings: int = 6) -> dict:
     name = check_text("書き起こすパート", part)
     if not name:
         raise ValueError("書き起こすパートを指定してください（例: Guitar I）")
-    if isinstance(strings, bool) or strings not in (4, 6):
-        raise ValueError("弦数は 4 または 6 を指定してください")
+    _check_strings(strings)
     return {"part": name, "strings": strings}
+
+
+def pending_options(strings: int | None = None) -> dict:
+    """パートを選ぶ前の設定。弦数は、先に決めてあれば 4 か 6、まだなら None。"""
+    if strings is not None:
+        _check_strings(strings)
+    return {"part": None, "strings": strings}
+
+
+def is_chosen(data) -> bool:
+    """meta.json の paper で、書き起こすパートが決まっているか（part が null なら選択待ち）。"""
+    return isinstance(data, dict) and data.get("part") is not None
 
 
 def configure(workdir: Path, part: str, strings: int) -> None:
@@ -52,6 +79,13 @@ def configure(workdir: Path, part: str, strings: int) -> None:
         score = {**score, "tuning": "g2 d2 a1 e1" if strings == 4 else DEFAULT_TUNING, "capo": 0}
         write_json(workdir / "score.json", score, root=root)
     meta["paper"] = selected
+    save_meta(workdir, meta)
+
+
+def configure_pending(workdir: Path, strings: int | None = None) -> None:
+    """パートを選ぶ前の紙の楽譜として保存する（strip の段が楽譜のパートを洗い出して止まる）。"""
+    meta = load_meta(workdir)
+    meta["paper"] = pending_options(strings)
     save_meta(workdir, meta)
 
 
@@ -225,6 +259,161 @@ def analyze(workdir: Path, engine: str, log, *, settings=None, on_actual=None, c
             report = result.text + "\n" + "\n".join(f"- 注意: {w}" for w in data.get("warnings", []))
             inside.write_text(folder, "notes.md", report + "\n")
         for warning in data.get("warnings", []):
+            log(f"紙の楽譜の注意: {warning}")
+        return data
+    raise AssertionError("unreachable")
+
+
+class NoTabPart(ValueError):
+    """洗い出した一覧に TAB のあるパートが無い（形の誤りではないので、エージェントにやり直させない）。"""
+
+
+def validate_parts(data, frames: list[Frame]) -> dict:
+    """洗い出しの結果（parts.json の中身）を確かめ、使う項目だけにした表を返す。合わなければ ValueError。
+
+    名前は画面と端末に出し、選んだあとはプロンプトにも入るので、取り込み時のパート名と同じ規則
+    （add.check_text。改行などの制御文字を拒む）に通す。前後の空白だけを除き、綴りは変えない。
+    知らないキーは捨てる。
+    """
+    from videotab.add import check_text
+
+    if not isinstance(data, dict) or not isinstance(data.get("parts"), list):
+        raise ValueError("parts の一覧がありません")
+    warnings = data.get("warnings", [])
+    if not isinstance(warnings, list) or any(not isinstance(w, str) for w in warnings):
+        raise ValueError("warnings は文の一覧にしてください")
+    if len(warnings) > MAX_WARNINGS or any(len(w) > MAX_WARNING_TEXT for w in warnings):
+        raise ValueError(f"warnings は {MAX_WARNINGS} 件まで、1 件 {MAX_WARNING_TEXT} 文字までにしてください")
+    if not data["parts"]:
+        raise ValueError("parts が空です。楽譜にあるパートを 1 つ以上書いてください")
+    if len(data["parts"]) > MAX_PARTS:
+        raise ValueError(f"パートは {MAX_PARTS} 個までにしてください")
+    indices = {f.index for f in frames}
+    parts, seen = [], set()
+    for row in data["parts"]:
+        if not isinstance(row, dict) or not isinstance(row.get("name"), str):
+            raise ValueError("パートは name（文字列）を持つ表にしてください")
+        name = check_text("パート名", row["name"])
+        if not name:
+            raise ValueError("パート名が空です")
+        if len(name) > MAX_PART_NAME:
+            raise ValueError(f"パート名は {MAX_PART_NAME} 文字までにしてください")
+        if name in seen:
+            raise ValueError(f"同じ名前のパートが重複しています: {name}")
+        seen.add(name)
+        if type(row.get("tab")) is not bool:
+            raise ValueError(f"{name} の tab は true か false にしてください")
+        strings = row.get("strings")
+        if strings is not None and (type(strings) is not int or strings not in (4, 6)):
+            raise ValueError(f"{name} の strings は 4、6、null のどれかにしてください")
+        part = {"name": name, "tab": row["tab"], "strings": strings}
+        if row.get("confidence") is not None:
+            if not isinstance(row["confidence"], str) or row["confidence"] not in CONFIDENCE:
+                raise ValueError(f"{name} の confidence は high、medium、low のどれかにしてください")
+            part["confidence"] = row["confidence"]
+        if row.get("frames") is not None:
+            numbers = row["frames"]
+            if not isinstance(numbers, list) or any(type(n) is not int for n in numbers):
+                raise ValueError(f"{name} の frames は元画像の番号の一覧にしてください")
+            if len(numbers) > MAX_PART_FRAMES or len(set(numbers)) != len(numbers):
+                raise ValueError(f"{name} の frames は重複なしで {MAX_PART_FRAMES} 個までにしてください")
+            if not set(numbers) <= indices:
+                raise ValueError(f"{name} の frames に存在しない元フレームが指定されています")
+            part["frames"] = list(numbers)
+        parts.append(part)
+    if not any(part["tab"] for part in parts):
+        raise NoTabPart("TAB のあるパートが見つかりません" + (": " + " / ".join(warnings) if warnings else ""))
+    return {"parts": parts, "warnings": list(warnings)}
+
+
+def load_parts(workdir: Path) -> list[dict]:
+    """洗い出したパートの一覧（検査済み）。parts.json が無い・検査に通らないときは空の一覧。"""
+    try:
+        data = read_json(confine.guard(workdir / "paper" / "parts.json", root=confine.root_of(workdir)))
+        return validate_parts(data, source_frames(workdir))["parts"]
+    except (OSError, ValueError, SystemExit):  # 無い・壊れた JSON・検査の誤り・外を指すリンク
+        return []
+
+
+def describe_parts(parts: list[dict]) -> list[str]:
+    """洗い出したパートの一覧を、端末とログに出す行にする（1 パート 1 行、番号付き）。"""
+    width = max((len(part["name"]) for part in parts), default=0)
+    lines = []
+    for number, part in enumerate(parts, start=1):
+        if part["tab"]:
+            notes = ["TAB あり", f"{part['strings']} 弦の見込み" if part["strings"] else "弦数の見込みなし"]
+            if part.get("confidence"):
+                notes.append(f"確信度 {CONFIDENCE[part['confidence']]}")
+            if part.get("frames"):
+                notes.append("ページ " + ", ".join(map(str, part["frames"])))
+        else:
+            notes = ["TAB なし（選べません）"]
+        lines.append(f"  {number}. {part['name'].ljust(width)}  " + "  ".join(notes))
+    return lines
+
+
+def parts_prompt(workdir: Path, picks: list[Frame]) -> str:
+    wd = workdir.resolve()
+    frames = "\n".join(f"- {f.index}: {f.path.name}" for f in picks)
+    return f"""あなたは紙の楽譜にあるパートを洗い出す担当です。書き起こしとページ選びは別の担当が行います。
+作業フォルダ: {wd}
+
+{wd}/paper/candidates/c*.jpg の一覧を見て、必要なら {wd}/frames/ の元画像を開いて確かめてください。
+楽譜に書かれた楽器名（Guitar I / II、Bass、Vocal、Drums 等）を、すべて書き出します。
+- 名前は楽譜に書かれた綴りのままにします。大文字と小文字、ローマ数字、記号を変えず、省略もしません。
+- 同じ楽器が複数あれば（Guitar I と Guitar II など）、それぞれ別のパートとして書きます。
+- 各パートに TAB（6 本か 4 本の線と数字の段）があるかを確かめます。
+- TAB があるパートは、TAB の線の本数から弦数を 6 か 4 で書きます。TAB が無い、または本数が読めなければ null です。
+- 読めない名前、隠れている名前を推測で補わないでください。読めない所は warnings に理由を書きます。
+
+出力は {wd}/paper/parts.json だけです。次の JSON で書いてください。
+{{"parts":[{{"name":"Guitar II","tab":true,"strings":6,"confidence":"high","frames":[2,5]}},{{"name":"Drums","tab":false,"strings":null}}],"warnings":[]}}
+- name は楽譜に書かれた楽器名（{MAX_PART_NAME} 文字まで、改行なし）。同じ名前を 2 回書きません。
+- tab は TAB の段があれば true、五線だけなら false。
+- strings は 6、4、null のどれか。
+- confidence は名前と TAB の有無の確かさで、high / medium / low のどれか（省略できます）。
+- frames はそのパートを確かめた元画像の番号（省略できます）。下の一覧にある番号だけを書きます。
+- パートは {MAX_PARTS} 個までです。
+
+元画像、一覧、既存の parts.json を読むことと、parts.json を書くことだけを行ってください。
+HTML・alphaTex の作成、ほかのファイルの変更、利用者への質問はしないでください。
+最後の返答は日本語で、見つけたパートと読めなかった所だけを短く書いてください。
+候補の元画像:
+{frames}
+"""
+
+
+def discover(workdir: Path, engine: str, log, *, settings=None, on_actual=None, cancel=None) -> dict:
+    """楽譜にあるパートをエージェントに洗い出させ、検査済みの一覧を返す。
+
+    指定する出力先は paper/parts.json の 1 ファイルだけ。検査に落ちたら、誤りの文を足して 1 回だけ
+    やり直す。TAB のあるパートが無いときは、やり直さずに NoTabPart を出す。
+    """
+    picks = prepare(workdir)
+    wd = workdir.resolve()
+    prompt = parts_prompt(workdir, picks)
+    target = wd / "paper" / "parts.json"
+    for attempt in range(2):
+        # 前の洗い出しの結果を、今回の結果として読まない。
+        with inside.open_dir(confine.root_of(workdir), "paper") as folder:
+            if inside.exists(folder, "parts.json"):
+                inside.remove(folder, "parts.json")
+        result = run_agent(prompt, engine=engine, workdir=workdir, writable=[target], log=log,
+                           label=PARTS_LABEL, settings=settings, on_actual=on_actual, cancel=cancel,
+                           images=sorted((wd / "paper" / "candidates").glob("c*.jpg")))
+        try:
+            data = validate_parts(read_json(confine.guard(target, root=wd)), source_frames(workdir))
+        except NoTabPart:
+            raise
+        except (OSError, ValueError) as e:
+            if attempt:
+                raise RuntimeError(f"楽譜のパートを洗い出せませんでした: {e}") from None
+            prompt += f"\n前回の出力は検査に通りませんでした: {e}\nJSON の形と値を直し、もう一度書いてください。"
+            continue
+        with inside.open_dir(confine.root_of(workdir), "paper") as folder:
+            report = result.text + "\n" + "\n".join(f"- 注意: {w}" for w in data["warnings"])
+            inside.write_text(folder, "parts.md", report + "\n")
+        for warning in data["warnings"]:
             log(f"紙の楽譜の注意: {warning}")
         return data
     raise AssertionError("unreachable")

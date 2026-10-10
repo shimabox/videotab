@@ -212,11 +212,14 @@ def test_paper_pipeline_selects_part_builds_score_and_skips_timing(tmp_path, mon
     monkeypatch.setattr(paper, "run_agent", agent)
     monkeypatch.setattr(read, "run_agent", agent)
     monkeypatch.setattr(pipeline.Job, "_cli", lambda self, *argv: cli.main(list(argv)))
+    assert load_meta(wd)["paper"] == {"part": "Guitar I", "strings": 6}  # パートを明示して作った曲の形
     job = pipeline.Job.create(wd, "codex", choice=Choice("gpt-5", "high"))
     assert job.run()
     assert job.load()["status"] == "done"
     assert job.load()["steps"][-1]["message"].startswith("小節と拍の検査済み")
     assert (wd / (wd.name + ".html")).exists()
+    assert [label for label, _, _ in calls] == ["ページとパート", "A"]  # パートの洗い出しは起動しない
+    assert not (wd / "paper" / "parts.json").exists()
     assert all(s.chosen_model == "gpt-5" for _, s, _ in calls)
     assert read_json(wd / "marks.json") == []
 
@@ -433,3 +436,289 @@ def test_failed_run_by_folder_path_gives_a_working_resume_command(tmp_path, monk
     monkeypatch.setattr(pipeline.Job, "run", lambda self: seen.append(self.workdir) or True)
     assert cli.main(command[1:]) == 0
     assert seen == [wd.resolve()]
+
+
+# --- パートの洗い出し
+
+PARTS = {
+    "parts": [
+        {"name": "Guitar I", "tab": True, "strings": 6, "confidence": "high", "frames": [1, 2]},
+        {"name": "Guitar II", "tab": True, "strings": 6},
+        {"name": "Bass", "tab": True, "strings": 4, "confidence": "low"},
+        {"name": "Drums", "tab": False, "strings": None},
+    ],
+    "warnings": ["3 ページ目は右端が切れていて楽器名が読めません"],
+}
+
+
+def make_pending(tmp_path, strings=None):
+    """パートを選ぶ前の紙の楽譜（合成の 3 枚）。"""
+    wd = tmp_path / "work" / "paper-123abc"
+    write_frames(wd, [np.asarray(score_image()) for _ in range(3)])
+    save_meta(wd, {"id": wd.name, "title": "合成の楽譜", "frames_from": "synthetic"})
+    paper.configure_pending(wd, strings)
+    return wd
+
+
+def write_parts(wd, data=PARTS):
+    (wd / "paper").mkdir(exist_ok=True)
+    (wd / "paper" / "parts.json").write_text(json.dumps(data))
+
+
+def test_pending_paper_keeps_part_unset_until_chosen(tmp_path):
+    wd = make_pending(tmp_path)
+    assert load_meta(wd)["paper"] == {"part": None, "strings": None}
+    assert not paper.is_chosen(load_meta(wd)["paper"])
+    with pytest.raises(ValueError, match="パートを指定"):
+        paper.selection(wd)
+    paper.configure_pending(wd, 4)
+    assert load_meta(wd)["paper"] == {"part": None, "strings": 4}
+    with pytest.raises(ValueError, match="弦数"):
+        paper.pending_options(5)
+    paper.configure(wd, "Guitar II", 6)
+    assert paper.is_chosen(load_meta(wd)["paper"])
+    assert paper.is_chosen({"part": "Guitar I", "strings": 6})  # パートを明示して作った曲の形
+
+
+def test_found_parts_keep_spelling_and_known_fields_only(tmp_path):
+    wd = make_pending(tmp_path)
+    data = {"parts": [{"name": "  Guitar II ", "tab": True, "strings": None, "extra": "<b>"},
+                      {"name": "<b>Vocal</b>", "tab": False, "strings": None, "confidence": "medium", "frames": [3]}]}
+    assert paper.validate_parts(data, list_frames(wd)) == {
+        "parts": [{"name": "Guitar II", "tab": True, "strings": None},
+                  {"name": "<b>Vocal</b>", "tab": False, "strings": None, "confidence": "medium", "frames": [3]}],
+        "warnings": [],
+    }
+    assert paper.validate_parts(PARTS, list_frames(wd)) == PARTS
+
+
+def part_row(**change):
+    return {"name": "Guitar I", "tab": True, "strings": 6, **change}
+
+
+@pytest.mark.parametrize("data", [
+    [],
+    {"parts": {}},
+    {"parts": []},
+    {"parts": [part_row(name=f"Guitar {n}") for n in range(41)]},
+    {"parts": ["Guitar I"]},
+    {"parts": [part_row(name=5)]},
+    {"parts": [part_row(name="   ")]},
+    {"parts": [part_row(name="Guitar\nII")]},
+    {"parts": [part_row(name="Guitar \x1b[31mII")]},
+    {"parts": [part_row(name="G" * 81)]},
+    {"parts": [part_row(), part_row(name=" Guitar I ")]},
+    {"parts": [part_row(tab=1)]},
+    {"parts": [part_row(tab="true")]},
+    {"parts": [part_row(strings=5)]},
+    {"parts": [part_row(strings=True)]},
+    {"parts": [part_row(strings="6")]},
+    {"parts": [part_row(confidence="certain")]},
+    {"parts": [part_row(frames=[999])]},
+    {"parts": [part_row(frames=[1, 1])]},
+    {"parts": [part_row(frames=[True])]},
+    {"parts": [part_row(frames=list(range(201)))]},
+    {"parts": [part_row()], "warnings": "読めません"},
+    {"parts": [part_row()], "warnings": [1]},
+    {"parts": [part_row()], "warnings": ["注意"] * 51},
+    {"parts": [part_row()], "warnings": ["あ" * 501]},
+])
+def test_invalid_found_parts_are_rejected(tmp_path, data):
+    wd = make_pending(tmp_path)
+    with pytest.raises(ValueError) as e:
+        paper.validate_parts(data, list_frames(wd))
+    assert not isinstance(e.value, paper.NoTabPart)
+
+
+def test_found_parts_without_any_tab_fail_with_the_reported_reason(tmp_path):
+    wd = make_pending(tmp_path)
+    data = {"parts": [{"name": "Piano", "tab": False, "strings": None}], "warnings": ["五線だけの楽譜です"]}
+    with pytest.raises(paper.NoTabPart, match="TAB のあるパートが見つかりません: 五線だけの楽譜です"):
+        paper.validate_parts(data, list_frames(wd))
+
+
+def test_found_parts_are_listed_one_per_line():
+    assert paper.describe_parts(PARTS["parts"]) == [
+        "  1. Guitar I   TAB あり  6 弦の見込み  確信度 高  ページ 1, 2",
+        "  2. Guitar II  TAB あり  6 弦の見込み",
+        "  3. Bass       TAB あり  4 弦の見込み  確信度 低",
+        "  4. Drums      TAB なし（選べません）",
+    ]
+    assert paper.describe_parts([{"name": "Guitar", "tab": True, "strings": None}]) == [
+        "  1. Guitar  TAB あり  弦数の見込みなし"
+    ]
+
+
+def test_discover_writes_one_file_and_retries_once_with_the_error(tmp_path, monkeypatch):
+    wd = make_pending(tmp_path)
+    write_parts(wd, {"parts": [{"name": "前回の結果", "tab": True, "strings": 6}]})
+    calls, logs = [], []
+    def agent(prompt, *, workdir, writable, label, images=None, **kwargs):
+        calls.append((label, prompt, list(writable)))
+        assert images and all(path.is_file() and path.parent.name == "candidates" for path in images)
+        assert not writable[0].exists()  # 前の洗い出しの結果は消してから起動する
+        writable[0].write_text("{壊れた JSON" if len(calls) == 1 else json.dumps(PARTS))
+        return AgentResult(True, "4 つのパートを見つけました", .1)
+    monkeypatch.setattr(paper, "run_agent", agent)
+    found = paper.discover(wd, "claude", logs.append)
+    assert found == PARTS
+    assert [label for label, _, _ in calls] == ["パートの洗い出し"] * 2
+    assert all(writable == [wd.resolve() / "paper" / "parts.json"] for _, _, writable in calls)
+    assert "検査に通りませんでした" not in calls[0][1] and "検査に通りませんでした" in calls[1][1]
+    assert "Guitar II" in calls[0][1] and "0001_" in calls[0][1]  # JSON の例と、候補の元画像の一覧
+    report = (wd / "paper" / "parts.md").read_text()
+    assert "4 つのパートを見つけました" in report and "右端が切れていて" in report
+    assert any("右端が切れていて" in line for line in logs)
+    assert paper.load_parts(wd) == PARTS["parts"]
+
+
+def test_discover_gives_up_after_second_invalid_output(tmp_path, monkeypatch):
+    wd = make_pending(tmp_path)
+    calls = []
+    def agent(prompt, *, writable, **kwargs):
+        calls.append(writable)
+        writable[0].write_text(json.dumps({"parts": [part_row(strings=5)]}))
+        return AgentResult(True, "", .1)
+    monkeypatch.setattr(paper, "run_agent", agent)
+    with pytest.raises(RuntimeError, match="洗い出せませんでした.*strings"):
+        paper.discover(wd, "claude", lambda _: None)
+    assert len(calls) == 2 and all(len(writable) == 1 for writable in calls)
+    assert paper.load_parts(wd) == []
+    assert len(list_frames(wd)) == 3
+
+
+def test_discover_does_not_retry_when_no_part_has_tab(tmp_path, monkeypatch):
+    wd = make_pending(tmp_path)
+    calls = []
+    def agent(prompt, *, writable, **kwargs):
+        calls.append(writable)
+        writable[0].write_text(json.dumps({"parts": [{"name": "Piano", "tab": False, "strings": None}],
+                                           "warnings": ["TAB の段がありません"]}))
+        return AgentResult(True, "", .1)
+    monkeypatch.setattr(paper, "run_agent", agent)
+    with pytest.raises(paper.NoTabPart, match="TAB の段がありません"):
+        paper.discover(wd, "claude", lambda _: None)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("text", ["{", "[]", json.dumps({"parts": [part_row(tab=1)]})])
+def test_found_parts_are_checked_again_on_every_read(tmp_path, text):
+    wd = make_pending(tmp_path)
+    assert paper.load_parts(wd) == []  # まだ無い
+    write_parts(wd)
+    assert paper.load_parts(wd) == PARTS["parts"]
+    (wd / "paper" / "parts.json").write_text(text)
+    assert paper.load_parts(wd) == []
+
+
+def fake_agents(wd, monkeypatch, parts=PARTS):
+    """洗い出し・ページ選択・読み手を偽物にし、起動された担当の名前が順に入るリストを返す。"""
+    calls = []
+    def agent(prompt, *, workdir, writable, label, images=None, **kwargs):
+        calls.append(label)
+        if label == "パートの洗い出し":
+            assert [p.name for p in writable] == ["parts.json"]  # 指定する出力先は 1 ファイルだけ
+            writable[0].write_text(json.dumps(parts))
+        elif label == "ページとパート":
+            assert json.dumps(paper.selection(wd)["part"], ensure_ascii=False) in prompt
+            writable[0].write_text(json.dumps({"pages": [{"frame": 2, "regions": [REGION]}]}))
+        else:
+            (wd / "parts" / "part_A.json").write_text('{"1": "(3.2).1", "2": "r.1"}')
+            (wd / "readers" / "pagebars_A.json").write_text('{"1": 1}')
+            score = build.load_score(wd)
+            score["tempo"] = 120
+            (wd / "score.json").write_text(json.dumps(score))
+        return AgentResult(True, "合成の結果", .1)
+    monkeypatch.setattr(paper, "run_agent", agent)
+    monkeypatch.setattr(read, "run_agent", agent)
+    monkeypatch.setattr(pipeline.Job, "_cli", lambda self, *argv: cli.main(list(argv)))
+    return calls
+
+
+def steps_of(job):
+    return {s["name"]: s for s in job.load()["steps"]}
+
+
+def test_pipeline_without_part_lists_parts_and_waits(tmp_path, monkeypatch):
+    wd = make_pending(tmp_path)
+    calls = fake_agents(wd, monkeypatch)
+    monkeypatch.setattr(paper, "analyze", lambda *a, **k: pytest.fail("パートを選ぶ前にページを選ばない"))
+    job = pipeline.Job.create(wd)
+    assert job.load()["source_mode"] == "paper"
+    assert job.run() is False
+    data, steps = job.load(), steps_of(job)
+    assert data["status"] == "waiting" and calls == ["パートの洗い出し"]
+    assert steps["frames"]["status"] == "done"
+    assert steps["strip"]["status"] == "pending" and steps["strip"]["started"] is None
+    assert steps["strip"]["message"] == "パートの選択待ち（TAB あり 3 / 全 4）"
+    assert steps["pages"]["status"] == "pending"
+    assert len(list_frames(wd)) == 3 and paper.load_parts(wd) == PARTS["parts"]
+    assert load_meta(wd)["paper"] == {"part": None, "strings": None}
+    log = "\n".join(job.log_tail())
+    assert "楽譜で見つかったパート:" in log and "2. Guitar II  TAB あり" in log
+    assert pipeline.finished_at(data) is None
+
+
+def test_waiting_job_continues_from_selection_after_part_is_chosen(tmp_path, monkeypatch):
+    wd = make_pending(tmp_path)
+    calls = fake_agents(wd, monkeypatch)
+    job = pipeline.Job.create(wd)
+    assert not job.run()
+    paper.configure(wd, "Guitar II", 6)
+    job.reset_from("strip")
+    assert job.load()["status"] == "queued"
+    assert job.run()
+    assert calls == ["パートの洗い出し", "ページとパート", "A"]
+    assert job.load()["status"] == "done" and steps_of(job)["strip"]["message"].endswith("指定パートを選びました")
+    assert read_json(wd / "pages" / "pages.json")["part"] == "Guitar II"
+    assert paper.load_parts(wd) == PARTS["parts"]  # 選んだあとも一覧は残る
+
+
+def test_waiting_job_lists_parts_again_when_strip_is_rerun_without_part(tmp_path, monkeypatch):
+    wd = make_pending(tmp_path)
+    calls = fake_agents(wd, monkeypatch)
+    job = pipeline.Job.create(wd)
+    assert not job.run()
+    job.reset_from("strip")
+    assert not job.run()
+    assert calls == ["パートの洗い出し"] * 2 and job.load()["status"] == "waiting"
+
+
+def test_waiting_job_is_not_marked_as_interrupted(tmp_path, monkeypatch):
+    wd = make_pending(tmp_path)
+    fake_agents(wd, monkeypatch)
+    job = pipeline.Job.create(wd)
+    assert not job.run()
+    before = job.load()
+    pipeline.Job(wd).mark_interrupted()
+    pipeline.Job(wd).mark_stopped()
+    assert job.load() == before and before["status"] == "waiting"
+
+
+def test_stopping_during_part_listing_keeps_part_unset(tmp_path, monkeypatch):
+    from videotab.cancel import Cancelled
+
+    wd = make_pending(tmp_path)
+    def stopped(*args, **kwargs):
+        raise Cancelled()
+    monkeypatch.setattr(paper, "run_agent", stopped)
+    job = pipeline.Job.create(wd)
+    assert not job.run()
+    assert job.load()["status"] == "stopped" and steps_of(job)["strip"]["status"] == "pending"
+    assert load_meta(wd)["paper"] == {"part": None, "strings": None}
+    calls = fake_agents(wd, monkeypatch)
+    job.reset_from("strip")
+    assert not job.run()
+    assert calls == ["パートの洗い出し"] and job.load()["status"] == "waiting"
+
+
+def test_score_without_tab_part_fails_the_step_with_the_reason(tmp_path, monkeypatch):
+    wd = make_pending(tmp_path)
+    calls = fake_agents(wd, monkeypatch, {"parts": [{"name": "Piano", "tab": False, "strings": None}],
+                                          "warnings": ["五線だけの楽譜です"]})
+    job = pipeline.Job.create(wd)
+    assert not job.run()
+    strip = steps_of(job)["strip"]
+    assert job.load()["status"] == "failed" and strip["status"] == "failed"
+    assert strip["message"] == "TAB のあるパートが見つかりません: 五線だけの楽譜です"
+    assert calls == ["パートの洗い出し"] and len(list_frames(wd)) == 3
