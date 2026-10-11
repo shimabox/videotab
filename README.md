@@ -1,5 +1,8 @@
 # videotab
 
+> [!IMPORTANT]
+> **このリポジトリの更新は終了しました。** 開発は [shimabox/youtab](https://github.com/shimabox/youtab) で続けています。
+
 手元の動画ファイルから、画面に写るタブ譜を 1 枚の楽譜（alphaTab の HTML＋alphaTex）に書き起こします。
 
 <table>
